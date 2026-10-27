@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+# Generated at run time: TLS material, local overrides, imported content
+/certs/
+/local/
+/out/
+*.env
+!example.env
