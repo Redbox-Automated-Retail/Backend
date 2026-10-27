@@ -12,6 +12,7 @@
     rb.ps1 status                containers and health
     rb.ps1 logs <service>        service = db | updatesvc | cloudapi | iot
     rb.ps1 admin <args...>       python -m redbox_backend admin <args> inside rb-iot
+    rb.ps1 admin-in <dir> <args> same, in a one-off container with <dir> mounted at /in
     rb.ps1 import-store <path>   import a kiosk's "REDS\Update Manager\.store" (repositories, config/store files)
     rb.ps1 export-ca             copy ca.crt / ca.cer to backend\certs\ for installing on kiosks
     rb.ps1 test                  run the protocol tests inside a container against the running stack
@@ -134,6 +135,15 @@ switch ($Command) {
     }
     "admin" {
         & $Wslc exec rb-iot python -m redbox_backend admin @Rest
+    }
+    "admin-in" {
+        # Like "admin", in a one-off container with a host folder mounted read-only at /in (for publish,
+        # fileset-create, config-file-set, download-file).
+        if (-not $Rest -or $Rest.Count -lt 2) { throw "usage: rb.ps1 admin-in <host folder> <admin args...> (refer to the folder as /in)" }
+        $dir = (Resolve-Path $Rest[0]).Path
+        $envs = Env-Args @{ IOT_ADMIN_URL = "http://rb-iot:8081" }
+        W run --rm --network $Network -v "$($Volumes.data):/data" -v "$($Volumes.certs):/certs" -v "${dir}:/in:ro" `
+            @envs $Image python -m redbox_backend admin @($Rest[1..($Rest.Count - 1)])
     }
     "import-store" {
         if (-not $Rest) { throw "usage: rb.ps1 import-store <path to 'REDS\Update Manager\.store'> [admin import-store options]" }
