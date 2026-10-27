@@ -16,7 +16,9 @@ param(
     [string] $Store = "59394",
     [string[]] $Activate = @(),
     [switch] $ServerPoll,
-    [int] $Rounds = 3
+    [int] $Rounds = 3,
+    # updatemgrd.exe build, to parse file-set replies with its internal model classes
+    [string] $UpdatemgrdExe = ""
 )
 $ErrorActionPreference = "Stop"
 New-Item -ItemType Directory -Force (Join-Path $Root ".store\.repository"), (Join-Path $Root ".store\.data") | Out-Null
@@ -28,7 +30,7 @@ $env:PATH = "$BinDir;$env:PATH"
 $refs = Get-ChildItem $BinDir -Filter *.dll | Where-Object { $_.Name -like "Redbox.*" -or $_.Name -like "Common.Logging*" } |
     ForEach-Object { $_.FullName }
 foreach ($r in $refs) { [void][Reflection.Assembly]::LoadFrom($r) }
-$refs += "System.Core.dll", "System.Web.Extensions.dll"
+$refs += "System.Core.dll", "System.Web.Extensions.dll", "System.IO.Compression.dll"
 Add-Type -Path (Join-Path $PSScriptRoot "UpdateManagerHarness.cs") -ReferencedAssemblies $refs
-$code = [UpdateManagerHarness]::Run($Url, $Store, $Root, $Activate, [bool]$ServerPoll, $Rounds)
+$code = [UpdateManagerHarness]::Run($Url, $Store, $Root, $Activate, [bool]$ServerPoll, $Rounds, $UpdatemgrdExe)
 exit $code

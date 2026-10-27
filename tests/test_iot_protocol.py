@@ -228,6 +228,7 @@ def test_fileset_deploy_roundtrip(device):
     from redbox_backend import db, filesets
 
     async def make():
+        db._pool = None  # other test modules may hold a pool bound to their own event loop
         await db.init(max_size=2, apply_schema=False)
         await filesets.ensure_fileset(77, "Test Fileset")
         rev = await filesets.create_revision(77, "test", "1.0.0.0", [("C:\\Temp\\rbtest\\hello.txt", b"hello kiosk\r\n"),
@@ -235,7 +236,11 @@ def test_fileset_deploy_roundtrip(device):
         await filesets.deploy(77, rev, "kiosk", str(KIOSK), "ucs")
         await db.close()
         return rev
-    rev = asyncio.run(make())
+    saved = db._pool
+    try:
+        rev = asyncio.run(make())
+    finally:
+        db._pool = saved
     cf, kf, _ = device
     c = MqttClient(cf, kf, str(KIOSK))
     c.subscribe([f"redbox/kiosk/{KIOSK}/command"])

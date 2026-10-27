@@ -34,7 +34,7 @@ public static class UpdateManagerHarness
             Console.WriteLine("  " + what + ": " + e.Code + " " + e.Description + " " + e.Details);
     }
 
-    public static int Run(string url, string store, string root, string[] activate, bool serverPoll, int rounds)
+    public static int Run(string url, string store, string root, string[] activate, bool serverPoll, int rounds, string updatemgrdExe)
     {
         // As updatemgrd's Program does before anything else.
         System.Net.ServicePointManager.SecurityProtocol = System.Net.SecurityProtocolType.Tls12;
@@ -156,6 +156,9 @@ public static class UpdateManagerHarness
                             var sf = reply.Data.ToObject<Redbox.UpdateManager.Environment.StoreFileChangeSetData>();
                             Check(Convert.FromBase64String(sf.Base64Data).ToASCIISHA1Hash() == sf.DataHash, what + ": store file " + sf.Path + " hash OK");
                             break;
+                        case PollReplyType.FileSetChangeSet:
+                            CheckFileSet(reply.Data, updatemgrdExe, what);
+                            break;
                         default:
                             Console.WriteLine("  reply " + what + ": " + (reply.Data ?? "").Substring(0, Math.Min(200, (reply.Data ?? "").Length)));
                             break;
@@ -166,5 +169,38 @@ public static class UpdateManagerHarness
         }
         Console.WriteLine(failures == 0 ? "ALL CHECKS PASSED" : failures + " CHECK(S) FAILED");
         return failures;
+    }
+
+    // Parses a FileSetChangeSet with updatemgrd's own (internal) model classes, then downloads the revision
+    // zip and every file zip from DownloadUrl/Path and checks the hex SHA-1 values like FileSetDownloader does.
+    static void CheckFileSet(string data, string updatemgrdExe, string what)
+    {
+        if (string.IsNullOrEmpty(updatemgrdExe)) { Console.WriteLine("  reply " + what + " (no -UpdatemgrdExe, not parsed)"); return; }
+        var asm = System.Reflection.Assembly.LoadFrom(updatemgrdExe);
+        var csType = asm.GetType("Redbox.UpdateManager.FileSets.ClientFileSetRevisionChangeSet", true);
+        var revType = asm.GetType("Redbox.UpdateManager.FileSets.ClientFileSetRevision", true);
+        object cs = data.ToObject(csType);
+        Func<object, string, object> get = (o, n) => o.GetType().GetProperty(n).GetValue(o, null);
+        string downloadUrl = (string)get(cs, "DownloadUrl"), path = (string)get(cs, "Path"), fileHash = (string)get(cs, "FileHash");
+        Check(get(cs, "RevisionId") != null && !string.IsNullOrEmpty(path), what + ": parsed as updatemgrd ClientFileSetRevisionChangeSet (revision " + get(cs, "RevisionId") + ", ActiveOn " + get(cs, "ActiveOn") + ")");
+        using (var web = new System.Net.WebClient())
+        {
+            byte[] zip = web.DownloadData(downloadUrl + "/" + path);
+            Check(zip.ToASCIISHA1Hash() == fileHash, what + ": revision zip SHA-1 matches FileHash " + fileHash);
+            using (var archive = new System.IO.Compression.ZipArchive(new MemoryStream(zip)))
+            using (var reader = new StreamReader(archive.GetEntry("revision").Open()))
+            {
+                object rev = reader.ReadToEnd().ToObject(revType);
+                var files = (System.Collections.IEnumerable)get(rev, "Files");
+                int n = 0;
+                foreach (var f in files)
+                {
+                    byte[] fz = web.DownloadData(downloadUrl + "/" + (string)get(f, "Path"));
+                    Check(fz.ToASCIISHA1Hash() == (string)get(f, "FileHash"), what + ": file " + get(f, "Name") + " zip SHA-1 OK, destination " + get(f, "FileDestination"));
+                    n++;
+                }
+                Check(n > 0, what + ": manifest lists " + n + " files");
+            }
+        }
     }
 }
