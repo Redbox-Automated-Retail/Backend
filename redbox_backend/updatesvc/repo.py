@@ -8,7 +8,7 @@ revision). Content is a seed (the whole file) or a VCDIFF delta against the prev
 
 Change sets (`u p` replies):
   * the kiosk's head is one of our revisions -> the later revisions verbatim, as a tar of .patch files;
-  * otherwise (new kiosk, reset repository, unknown head) -> a *snapshot*: one revision (our head) whose
+  * no head (new kiosk, or a repository the kiosk reset after a failed patch) -> a *snapshot*: one revision (our head) whose
     items are seeds of every file at its head version. The snapshot is computed offline by
     `admin import-store` / `admin snapshot` (xdelta3 reconstruction, every step SHA-1 checked).
 """
@@ -304,6 +304,12 @@ async def change_set_for(repo, client_head):
         kind = f"{client_head[:8]}-{head[:8]}"
         revisions = [r["hash"] for r in selected]
         label = selected[-1]["label"]
+    elif client_head.strip("0"):
+        # A head we do not know (newer than our import, or another server's history). A snapshot would be
+        # appended after it and move the kiosk's files to *our* versions, possibly backwards, so send nothing.
+        log.warning("%s: kiosk reports unknown head %s; not sending anything (reset the repository on the"
+                    " kiosk to reseed it)", repo, client_head)
+        return None
     else:
         snap = await db.fetch("SELECT * FROM upd_snapshots WHERE repo=%s AND head_hash=%s ORDER BY target_path, target_name",
                               repo, head)
