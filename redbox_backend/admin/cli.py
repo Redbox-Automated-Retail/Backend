@@ -1,0 +1,276 @@
+"""Administration CLI: `python -m redbox_backend admin <command> ...` (run inside any backend container).
+
+Update Service (legacy updatemgrd):
+  import-store <.store dir> [--repo NAME ...] [--no-snapshot] [--config-files] [--store-files] [--rewrite OLD=NEW ...]
+  snapshot <repo>|--all              rebuild the full-file seed snapshot of a repository head
+  publish <repo> <dir> --target-path 'C:\\Program Files\\...' [--label L]
+                                     add a revision from a local directory (deltas via xdelta3)
+  repos                              list repositories and heads
+  stores                             list stores and their reported heads
+  store-set <number> [--enabled B] [--time-zone SERIALIZED] [--correct-time B]
+  link <number> <repo> [--unlink]
+  config-file-set <oid> <name> <kiosk dir> <json file>   new generation of a config file
+  download-file <local file> --name N --dest-dir D [--store S] [--script lua_file]
+
+File sets (Update Client and updatemgrd):
+  fileset-create <id> <name> <version> <dir> --dest 'C:\\...' [--dep FS:MIN[:MAX]]
+  fileset-deploy <fs> <rev> [--kiosk K | --market M] [--channel ucs|legacy] [--window 01:00-05:00]
+
+Kiosk configuration (configuration.json via the Update Client):
+  kconfig-set <Category> <Setting> <value> [--type string] [--kiosk K | --market M] [--rank R]
+  kconfig-list [--kiosk K]
+
+IoT:
+  iot-send <kiosk|market:M|all> <command> [--version V] [--payload JSON]  (via the iot admin API)
+  events [--kiosk K] [--limit N]
+"""
+import argparse
+import asyncio
+import json
+import os
+import pathlib
+import sys
+import urllib.request
+
+from .. import blobs, config, db, filesets
+from ..updatesvc import repo
+
+
+def _bool(s):
+    return str(s).lower() in ("1", "true", "yes", "on")
+
+
+async def import_store(args):
+    store = pathlib.Path(args.store)
+    rep_root = store / ".repository" if (store / ".repository").is_dir() else store
+    names = args.repo or sorted(p.name for p in rep_root.iterdir() if (p / ".revlog").exists())
+    rewrites = [r.split("=", 1) for r in args.rewrite or []]
+    for name in names:
+        print(json.dumps(await repo.import_repository(rep_root / name, name)))
+        if not args.no_snapshot:
+            res = await repo.build_snapshot(name)
+            print(json.dumps({k: v for k, v in res.items() if k != "problems"} | {"problems": len(res["problems"])}))
+    if args.config_files and (store / ".configfiles").is_dir():
+        for d in sorted((store / ".configfiles").iterdir()):
+            cfg = d / ".config"
+            if not cfg.is_file():
+                continue
+            text = cfg.read_text(encoding="utf-8-sig")
+            for old, new in rewrites:
+                text = text.replace(old, new)
+            data = json.loads(text)
+            await db.execute(
+                "INSERT INTO upd_config_files (oid, name, path, generation, data) VALUES (%s,%s,%s,%s,%s)"
+                " ON CONFLICT (oid) DO UPDATE SET name=EXCLUDED.name, path=EXCLUDED.path,"
+                " generation=EXCLUDED.generation, data=EXCLUDED.data, updated_at=now()",
+                int(data["OID"]), data["Name"], data["Path"], int(data["GenerationOID"]),
+                db.jsonb(data["ConfigurationData"]))
+            print(f"config file {data['OID']} {data['Name']} generation {data['GenerationOID']}")
+    if args.store_files and (store / ".storefiles").is_dir():
+        for state in sorted((store / ".storefiles").glob("*.state")):
+            st = json.loads(state.read_text(encoding="utf-8-sig"))
+            staged = state.with_suffix(".staged")
+            if not staged.is_file():
+                continue
+            req = st["StoreFilePollRequest"]
+            dest = st["Destination"]
+            await db.execute(
+                "INSERT INTO upd_store_files (id, name, path, data_id, blob) VALUES (%s,%s,%s,%s,%s)"
+                " ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, path=EXCLUDED.path, data_id=EXCLUDED.data_id,"
+                " blob=EXCLUDED.blob, deleted=false, modified_on=now()",
+                int(req["StoreFile"]), dest.split("\\")[-1], dest, int(req["StoreFileData"]),
+                blobs.put_file(staged))
+            print(f"store file {req['StoreFile']} -> {dest}")
+
+
+async def cmd_snapshot(args):
+    names = [r["name"] for r in await db.fetch("SELECT name FROM upd_repositories ORDER BY name")] \
+        if args.all else [args.repo]
+    for n in names:
+        res = await repo.build_snapshot(n)
+        print(json.dumps({k: v for k, v in res.items() if k != "problems"} | {"problems": res["problems"][:10]}))
+
+
+async def cmd_publish(args):
+    root = pathlib.Path(args.dir)
+    files = []
+    for p in sorted(root.rglob("*")):
+        if p.is_file():
+            rel = p.relative_to(root)
+            sub = "\\".join(rel.parts[:-1])
+            tp = args.target_path.rstrip("\\") + ("\\" + sub if sub else "")
+            files.append((tp, rel.parts[-1], p))
+    rev = await repo.publish_revision(args.repo, files, label=args.label, use_deltas=not args.no_deltas)
+    print(rev or "no changes")
+
+
+async def cmd_repos(args):
+    for r in await db.fetch("SELECT r.name, r.auto_subscribe, count(v.*) AS revisions,"
+                            " (SELECT hash FROM upd_revisions x WHERE x.repo=r.name ORDER BY seq DESC LIMIT 1) AS head,"
+                            " (SELECT count(*) FROM upd_snapshots s WHERE s.repo=r.name) AS snapshot_files"
+                            " FROM upd_repositories r LEFT JOIN upd_revisions v ON v.repo=r.name GROUP BY r.name ORDER BY r.name"):
+        print(f"{r['name']:24} revs={r['revisions']:<5} head={r['head']} snapshot_files={r['snapshot_files']}"
+              f" auto={r['auto_subscribe']}")
+
+
+async def cmd_stores(args):
+    for s in await db.fetch("SELECT * FROM upd_stores ORDER BY number"):
+        print(f"store {s['number']} enabled={s['enabled']} last_check_in={s['last_check_in']}")
+        for h in await db.fetch("SELECT * FROM upd_store_heads WHERE number=%s ORDER BY repo", s["number"]):
+            print(f"   {h['repo']:24} {h['head']} ({h['reported_at']:%Y-%m-%d %H:%M})")
+
+
+async def cmd_store_set(args):
+    await db.execute("INSERT INTO upd_stores (number) VALUES (%s) ON CONFLICT DO NOTHING", args.number)
+    if args.enabled is not None:
+        await db.execute("UPDATE upd_stores SET enabled=%s WHERE number=%s", _bool(args.enabled), args.number)
+    if args.time_zone is not None:
+        await db.execute("UPDATE upd_stores SET time_zone=%s WHERE number=%s", args.time_zone or None, args.number)
+    if args.correct_time is not None:
+        await db.execute("UPDATE upd_stores SET correct_time=%s WHERE number=%s", _bool(args.correct_time), args.number)
+    print(await db.fetchrow("SELECT * FROM upd_stores WHERE number=%s", args.number))
+
+
+async def cmd_link(args):
+    await db.execute("INSERT INTO upd_stores (number) VALUES (%s) ON CONFLICT DO NOTHING", args.number)
+    await db.execute("INSERT INTO upd_store_repos (number, repo, linked) VALUES (%s,%s,%s) ON CONFLICT (number, repo)"
+                     " DO UPDATE SET linked=EXCLUDED.linked", args.number, args.repo, not args.unlink)
+    print(await repo.repositories_for_store(args.number))
+
+
+async def cmd_config_file_set(args):
+    data = json.loads(pathlib.Path(args.json_file).read_text(encoding="utf-8-sig"))
+    if isinstance(data, dict) and "ConfigurationData" in data:
+        data = data["ConfigurationData"]
+    gen = await db.fetchval("SELECT coalesce(max(generation), 0) + 1 FROM upd_config_files")
+    await db.execute("INSERT INTO upd_config_files (oid, name, path, generation, data) VALUES (%s,%s,%s,%s,%s)"
+                     " ON CONFLICT (oid) DO UPDATE SET name=EXCLUDED.name, path=EXCLUDED.path,"
+                     " generation=EXCLUDED.generation, data=EXCLUDED.data, updated_at=now()",
+                     args.oid, args.name, args.kiosk_dir, gen, db.jsonb(data))
+    print(f"config file {args.oid} generation {gen}")
+
+
+async def cmd_download_file(args):
+    key = blobs.put_file(args.file)
+    script = pathlib.Path(args.script).read_text() if args.script else None
+    row = await db.fetchrow("INSERT INTO upd_download_files (number, name, type, file_name, destination_path, blob,"
+                            " activate_script) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                            args.store, args.name, 0, pathlib.Path(args.file).name, args.dest_dir, key, script)
+    print(f"download file {row['id']} queued")
+
+
+async def cmd_fileset_create(args):
+    await filesets.ensure_fileset(args.id, args.name)
+    root = pathlib.Path(args.dir)
+    files = []
+    for p in sorted(root.rglob("*")):
+        if p.is_file():
+            files.append((args.dest.rstrip("\\") + "\\" + "\\".join(p.relative_to(root).parts), p.read_bytes()))
+    deps = []
+    for d in args.dep or []:
+        bits = d.split(":")
+        deps.append({"DependsOnFileSetId": int(bits[0]), "DependencyType": 0, "MinimumVersion": bits[1],
+                     "MaximumVersion": bits[2] if len(bits) > 2 else None})
+    rev = await filesets.create_revision(args.id, args.name, args.version, files, deps)
+    print(f"file set {args.id} revision {rev}")
+
+
+async def cmd_fileset_deploy(args):
+    ttype, target = ("kiosk", args.kiosk) if args.kiosk else ("market", args.market) if args.market else ("all", None)
+    start = end = None
+    if args.window:
+        start, end = args.window.split("-")
+    dep = await filesets.deploy(args.fs, None if args.rev == 0 else args.rev, ttype, target, args.channel,
+                                activate_start=start, activate_end=end)
+    print(f"deployment {dep['id']}: file set {args.fs} revision {args.rev} -> {ttype} {target or ''} ({args.channel})")
+    if args.channel == "ucs" and not args.no_push:
+        _iot_post("/push/deploy", {"deploymentId": dep["id"]})
+
+
+async def cmd_kconfig_set(args):
+    from ..iot import kioskconfig
+    vid = await kioskconfig.set_value(args.category, args.setting, args.value, data_type=args.type,
+                                      kiosk_id=args.kiosk, market=args.market, rank=args.rank)
+    print(f"value {vid} set; configuration version {await kioskconfig.current_version()}")
+    if not args.no_push:
+        _iot_post("/push/config", {"kioskId": args.kiosk, "market": args.market})
+
+
+async def cmd_kconfig_list(args):
+    from ..iot import kioskconfig
+    doc = await kioskconfig.document_for(args.kiosk or 0, None)
+    print(json.dumps(doc, indent=2, default=str))
+
+
+def _iot_post(path, body):
+    url = os.environ.get("IOT_ADMIN_URL", f"http://rb-iot:{config.IOT_ADMIN_PORT}") + path
+    try:
+        req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            print(r.read().decode())
+    except Exception as e:
+        print(f"(could not notify iot service at {url}: {e})", file=sys.stderr)
+
+
+async def cmd_iot_send(args):
+    _iot_post("/send", {"target": args.target, "command": args.command, "version": args.version,
+                        "payload": json.loads(args.payload) if args.payload else None})
+
+
+async def cmd_events(args):
+    rows = await db.fetch("SELECT * FROM events WHERE (%s::bigint IS NULL OR kiosk_id = %s) ORDER BY id DESC LIMIT %s",
+                          args.kiosk, args.kiosk, args.limit)
+    for r in reversed(rows):
+        print(f"{r['created_at']:%Y-%m-%d %H:%M:%S} {r['kiosk_id'] or '-':>7} {r['source']}/{r['kind']} "
+              f"{json.dumps(r['payload'], default=str)[:300]}")
+
+
+def parser():
+    ap = argparse.ArgumentParser(prog="admin", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("import-store"); p.add_argument("store"); p.add_argument("--repo", action="append")
+    p.add_argument("--no-snapshot", action="store_true"); p.add_argument("--config-files", action="store_true")
+    p.add_argument("--store-files", action="store_true"); p.add_argument("--rewrite", action="append")
+    p.set_defaults(fn=import_store)
+    p = sub.add_parser("snapshot"); p.add_argument("repo", nargs="?"); p.add_argument("--all", action="store_true")
+    p.set_defaults(fn=cmd_snapshot)
+    p = sub.add_parser("publish"); p.add_argument("repo"); p.add_argument("dir"); p.add_argument("--target-path", required=True)
+    p.add_argument("--label"); p.add_argument("--no-deltas", action="store_true"); p.set_defaults(fn=cmd_publish)
+    sub.add_parser("repos").set_defaults(fn=cmd_repos)
+    sub.add_parser("stores").set_defaults(fn=cmd_stores)
+    p = sub.add_parser("store-set"); p.add_argument("number"); p.add_argument("--enabled")
+    p.add_argument("--time-zone"); p.add_argument("--correct-time"); p.set_defaults(fn=cmd_store_set)
+    p = sub.add_parser("link"); p.add_argument("number"); p.add_argument("repo"); p.add_argument("--unlink", action="store_true")
+    p.set_defaults(fn=cmd_link)
+    p = sub.add_parser("config-file-set"); p.add_argument("oid", type=int); p.add_argument("name")
+    p.add_argument("kiosk_dir"); p.add_argument("json_file"); p.set_defaults(fn=cmd_config_file_set)
+    p = sub.add_parser("download-file"); p.add_argument("file"); p.add_argument("--name", required=True)
+    p.add_argument("--dest-dir", required=True); p.add_argument("--store"); p.add_argument("--script")
+    p.set_defaults(fn=cmd_download_file)
+    p = sub.add_parser("fileset-create"); p.add_argument("id", type=int); p.add_argument("name"); p.add_argument("version")
+    p.add_argument("dir"); p.add_argument("--dest", required=True); p.add_argument("--dep", action="append")
+    p.set_defaults(fn=cmd_fileset_create)
+    p = sub.add_parser("fileset-deploy"); p.add_argument("fs", type=int); p.add_argument("rev", type=int)
+    p.add_argument("--kiosk"); p.add_argument("--market"); p.add_argument("--channel", default="ucs")
+    p.add_argument("--window"); p.add_argument("--no-push", action="store_true"); p.set_defaults(fn=cmd_fileset_deploy)
+    p = sub.add_parser("kconfig-set"); p.add_argument("category"); p.add_argument("setting"); p.add_argument("value")
+    p.add_argument("--type", default="string"); p.add_argument("--kiosk", type=int); p.add_argument("--market")
+    p.add_argument("--rank", type=int); p.add_argument("--no-push", action="store_true"); p.set_defaults(fn=cmd_kconfig_set)
+    p = sub.add_parser("kconfig-list"); p.add_argument("--kiosk", type=int); p.set_defaults(fn=cmd_kconfig_list)
+    p = sub.add_parser("iot-send"); p.add_argument("target"); p.add_argument("command")
+    p.add_argument("--version", type=int, default=1); p.add_argument("--payload"); p.set_defaults(fn=cmd_iot_send)
+    p = sub.add_parser("events"); p.add_argument("--kiosk", type=int); p.add_argument("--limit", type=int, default=50)
+    p.set_defaults(fn=cmd_events)
+    return ap
+
+
+async def _run(args):
+    await db.init(max_size=2)
+    try:
+        await args.fn(args)
+    finally:
+        await db.close()
+
+
+def main(argv):
+    asyncio.run(_run(parser().parse_args(argv)))
