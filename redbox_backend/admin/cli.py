@@ -46,7 +46,7 @@ async def import_store(args):
     names = args.repo or sorted(p.name for p in rep_root.iterdir() if (p / ".revlog").exists())
     rewrites = [r.split("=", 1) for r in args.rewrite or []]
     for name in names:
-        print(json.dumps(await repo.import_repository(rep_root / name, name)))
+        print(json.dumps(await repo.import_repository(rep_root / name, name, replace=not args.keep)))
         if not args.no_snapshot:
             res = await repo.build_snapshot(name)
             print(json.dumps({k: v for k, v in res.items() if k != "problems"} | {"problems": len(res["problems"])}))
@@ -231,6 +231,7 @@ def parser():
     p = sub.add_parser("import-store"); p.add_argument("store"); p.add_argument("--repo", action="append")
     p.add_argument("--no-snapshot", action="store_true"); p.add_argument("--config-files", action="store_true")
     p.add_argument("--store-files", action="store_true"); p.add_argument("--rewrite", action="append")
+    p.add_argument("--keep", action="store_true", help="add to existing repositories instead of replacing them")
     p.set_defaults(fn=import_store)
     p = sub.add_parser("snapshot"); p.add_argument("repo", nargs="?"); p.add_argument("--all", action="store_true")
     p.set_defaults(fn=cmd_snapshot)

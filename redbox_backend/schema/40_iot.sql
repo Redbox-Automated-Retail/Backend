@@ -55,3 +55,11 @@ CREATE TABLE IF NOT EXISTS iot_download_job_status (
     updated_at  timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (job_id, kiosk_id)
 );
+
+-- Profile product records served by GetRecordChanges (Kiosk Client "ProfileData", table Product = 1).
+-- data = the Product JSON object the Kiosk Client stores in ProductData.json.
+CREATE TABLE IF NOT EXISTS profile_products (
+    product_id  bigint PRIMARY KEY,
+    data        jsonb NOT NULL,
+    updated_at  timestamptz NOT NULL DEFAULT now()
+);

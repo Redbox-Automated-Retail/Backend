@@ -162,16 +162,16 @@ async def handle_rest_call(client, req):
 
 
 async def record_changes(request):
-    """GetRecordChanges (profile product data). Answers from a `products` table if the cloud API has one."""
+    """GetRecordChanges (profile product data). Answers from profile_products."""
     responses = []
     ids = [int(r.get("Id")) for r in request.get("RecordRequests") or [] if r.get("Id") is not None]
     hashes = {int(r.get("Id")): r.get("Hash") for r in request.get("RecordRequests") or [] if r.get("Id") is not None}
     found = {}
     try:
-        for row in await db.fetch("SELECT product_id, data FROM products WHERE product_id = ANY(%s)", ids):
+        for row in await db.fetch("SELECT product_id, data FROM profile_products WHERE product_id = ANY(%s)", ids):
             found[int(row["product_id"])] = row["data"]
     except Exception as e:
-        log.info("no product table for GetRecordChanges: %s", e)
+        log.warning("GetRecordChanges lookup failed: %s", e)
     for pid in ids:
         data = found.get(pid)
         if data is None:

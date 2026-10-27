@@ -36,6 +36,8 @@ public static class UpdateManagerHarness
 
     public static int Run(string url, string store, string root, string[] activate, bool serverPoll, int rounds)
     {
+        // As updatemgrd's Program does before anything else.
+        System.Net.ServicePointManager.SecurityProtocol = System.Net.SecurityProtocolType.Tls12;
         var macro = new MacroService();
         ServiceLocator.Instance.AddService(typeof(IMacroService), macro);
         macro["StoreNumber"] = store;
@@ -65,7 +67,7 @@ public static class UpdateManagerHarness
             using (var client = Redbox.UpdateService.Client.UpdateService.GetService(url, 120000))
                 result = client.GetChangeSet(store, heads, out storeInfo, out jobs);
             Check(result.Success, "round " + round + ": u p succeeded (" + jobs.Count + " change sets) " + result.StatusMessage);
-            foreach (var err in result.Errors) Console.WriteLine("  u p error: " + err.Code + " " + err.Description);
+            foreach (var err in result.Errors) Console.WriteLine("  u p error: " + err.Code + " " + err.Description + " " + err.Details);
             if (jobs.Count == 0) break;
             Check(storeInfo != null && storeInfo.Number == store, "Store record parsed (number " + (storeInfo == null ? "null" : storeInfo.Number) + ")");
             var created = new List<ITransferJob>();

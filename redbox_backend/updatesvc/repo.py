@@ -60,14 +60,26 @@ async def import_repository(repo_dir, name=None, replace=False):
     existing = {r["hash"]: r["seq"] for r in await db.fetch("SELECT hash, seq FROM upd_revisions WHERE repo=%s", name)}
     next_seq = (max(existing.values()) + 1) if existing else 0
     stored = missing = 0
+    added = {}  # revision hash -> next change index, for revisions inserted by this import
     for entry in entries:
         h = entry["Hash"].upper()
         if h in existing:
             continue
-        await db.execute("INSERT INTO upd_revisions (repo, seq, hash, label) VALUES (%s,%s,%s,%s)",
-                         name, next_seq, h, entry.get("Label"))
-        next_seq += 1
-        for idx, ch in enumerate(entry.get("Changes") or []):
+        if h in added:
+            # Real revlogs can repeat a hash (kop-shared-bundles has one hash three times in a row): the
+            # client finds the first entry, so fold the repeated entries' changes into it.
+            start = added[h]
+        else:
+            await db.execute("INSERT INTO upd_revisions (repo, seq, hash, label) VALUES (%s,%s,%s,%s)",
+                             name, next_seq, h, entry.get("Label"))
+            next_seq += 1
+            start = 0
+        seen = {(c["target_path"], c["target_name"], c["version_hash"]) for c in await db.fetch(
+            "SELECT target_path, target_name, version_hash FROM upd_changes WHERE repo=%s AND rev_hash=%s", name, h)}
+        changes = [ch for ch in entry.get("Changes") or []
+                   if (ch["TargetPath"], ch["TargetName"], ch["VersionHash"].upper()) not in seen]
+        added[h] = start + len(changes)
+        for idx, ch in enumerate(changes, start):
             blob = None
             if not ch.get("Composite"):
                 p = repo_dir / patch_name(h, ch["TargetPath"], ch["TargetName"])
