@@ -22,6 +22,7 @@ flowchart LR
     IOT["rb-iot<br/>MQTT/TLS :8883<br/>operator API :8081 (localhost)"]
     API["rb-cloudapi<br/>HTTPS :443"]
     ADM["rb-admin<br/>dashboard HTTPS :8443 (localhost)"]
+    REM["rb-remoting (Mono)<br/>gtcp :7890<br/>HttpChannel, control API (internal)"]
     DB[(rb-db<br/>PostgreSQL)]
     VOL[(volumes rb-data, rb-certs)]
   end
@@ -32,6 +33,11 @@ flowchart LR
   KCS -- "Transaction, Inventory, Proxy, Kiosk Data, Ads, Reels" --> API
   DS -- "Bluefin activation, Kiosk Data Service" --> API
   KE -- "Kiosk Data Service (session analytics)" --> API
+  KE -- "legacy reservation broker (GenuineChannels gtcp)" --> REM
+  KE -- "KioskServices MessageService.rem" --> API
+  API -- "binary .NET Remoting forwarded" --> REM
+  REM -- "internal API" --> API
+  ADM -- "Reserve3 / CancelReservation / Ping" --> REM
   US & IOT & API & ADM --> DB
   ADM -- "push config, deploy, remote jobs" --> IOT
   Admin((operator browser)) --> ADM
@@ -45,6 +51,7 @@ flowchart LR
 | `rb-iot` | `redbox-backend` `iot` | **AWS IoT Core** stand-in for the Update Client: MQTT broker, IoT rules, RPC handlers, configuration sync, operator API | 8883 (MQTT/TLS), 127.0.0.1:8081 |
 | `rb-cloudapi` | `redbox-backend` `cloudapi` | **Every HTTPS API** on one host: Transaction, Inventory, Proxy Service, Kiosk Data Service, Ad Server, Product Reels, Bluefin, IoT certificate service, S3; the 2014 Ticket Services (SOAP) also on plain HTTP | 443, 80 |
 | `rb-admin` | `redbox-backend` `dashboard` | **Admin dashboard** (web UI + JSON API) over the same database and the IoT operator API | 127.0.0.1:8443 |
+| `rb-remoting` | `redbox-remoting` (`remoting/Dockerfile`, Mono 6.12) | The two legacy **.NET Remoting** backends: the GenuineChannels **reservation broker** and the HttpChannel side of the **KioskServices MessageService**; no state of its own | 7890; 8090 and 8091 on the `redbox` network only |
 
 One Python 3.12 image (`Dockerfile`) holds all services; the code is in `redbox_backend/`:
 
@@ -58,6 +65,7 @@ One Python 3.12 image (`Dockerfile`) holds all services; the code is in `redbox_
 | `admin/cli.py` | Operator CLI (`rb.ps1 admin ...`) |
 | `dashboard/` | Admin dashboard: `server.py` (login, JSON API), `auth.py`, `static/` (single-page UI, no build step) |
 | `schema/*.sql` | Idempotent schema, applied at start-up by every service |
+| `../remoting/` | The Mono host (`src/RemotingHost.cs`), its build (`build.sh`: the kiosk's own `KioskShared` and `KioskServices.ComponentModel` sources compiled so type and assembly names match, plus the GenuineChannels patch in `tools/`) |
 
 ## Running it
 
@@ -66,12 +74,12 @@ Prerequisites: WSLC 3.0+ (`wslc version`), network access for the first image bu
 ```powershell
 cd backend
 copy example.env local\backend.env      # optional; edit host names, bind address, payment mode
-.\scripts\rb.ps1 build                  # build redbox-backend:latest
-.\scripts\rb.ps1 up                     # network + volumes + certificates + 4 containers
+.\scripts\rb.ps1 build                  # build redbox-backend:latest and redbox-remoting:latest
+.\scripts\rb.ps1 up                     # network + volumes + certificates + 6 containers
 .\scripts\rb.ps1 status
 .\scripts\rb.ps1 import-store "D:\image\REDS\Update Manager\.store"   # optional: serve a kiosk's update history
 .\scripts\rb.ps1 export-ca              # backend\certs\ca.cer for the kiosk
-.\scripts\rb.ps1 logs iot               # db | updatesvc | cloudapi | iot
+.\scripts\rb.ps1 logs iot               # db | updatesvc | cloudapi | iot | admin | remoting
 .\scripts\rb.ps1 admin events --limit 20
 .\scripts\rb.ps1 test                   # protocol tests against the running stack
 .\scripts\rb.ps1 down                   # stop (data kept)
@@ -112,6 +120,7 @@ configuration put back to the shipped Redbox values (the image's `.staged_` copi
    <ip> iotcertificateservice.kiosk.prod.redbox.com files.kiosk.prod.redbox.com
    <ip> aj5a0v5j9z9ai-ats.iot.us-east-1.amazonaws.com a2zxs75ezdmapj-ats.iot.us-east-1.amazonaws.com
    <ip> tickets-dev.redbox.com          # only for 2014 engines with the ticket feature
+   <ip> blt.accessredbox.net bl2.accessredbox.net   # legacy broker and KioskServices (older engines)
    ```
 
    (`files.kiosk.prod.redbox.com` is invented by this backend for presigned S3 URLs.) To use your own names
@@ -136,6 +145,8 @@ configuration put back to the shipped Redbox values (the image's `.staged_` copi
    | Kiosk Engine | `data\system.config` (config file OID 1, delivered by `u pr`) | `General/KioskDataServicesUrl`, `DeviceService/BluefinServiceUrl` | `https://dataservice.kiosk.prod.redbox.com`, `.../bluefinservice` - import with `--rewrite` or edit and `admin config-file-set` |
    | Device Service | `REDS\DeviceService\bin\Data\KioskData.json` | `ApiUrl` | `https://dataservice.kiosk.prod.redbox.com` (rewritten by the engine's `CheckDeviceStatus` from the kiosk's `KioskDataServicesUrl`) |
    | Registry | `HKLM\SOFTWARE\Redbox\REDS\Kiosk Engine\Store` | `ID`, `Market` | the kiosk id is the store number for every service |
+   | Kiosk Engine (legacy broker) | `HKLM\SOFTWARE\Redbox\REDS\Kiosk Engine\Remote Services\Reservation Services` | `BrokerServicesURL` | default `gtcp://blt.accessredbox.net:7890/RegistrationBroker/Default.rem`; only used when the rental configuration's `UseLegacyBrokerService` is true |
+   | Kiosk Engine (KioskServices) | `HKLM\SOFTWARE\Redbox\REDS\Kiosk Engine\Remote Services\Store Services` | `KioskServicesURL`, `KioskServicesProtocol`, `KioskServicesTimeout` | default `https://bl2.accessredbox.net/KioskServices/MessageService.rem`, `Remoting` (or `REST`), 30000 ms |
 
    See `docs/cloud-apis.md` for the cloud-API settings in detail.
 
@@ -181,6 +192,37 @@ or use the dashboard's **Update packages** page (import with progress) and the r
 - The image's own `.store` is newer still for `updateclient` (34 revisions against 33 in the May 2024 seed);
   importing it as well serves that revision.
 
+## Legacy .NET Remoting (`rb-remoting`)
+
+Two kiosk services were .NET Remoting, so they run on **Mono 6.12 with the real `System.Runtime.Remoting` and the
+kiosk's own GenuineChannels.dll** (no home-made encoder). The DTO and interface assemblies are compiled in the
+image from the decompiled sources (`Redbox.Services.KioskBrokerServices.KioskShared`,
+`Redbox.KioskServices.ComponentModel`), so the type and assembly names the binary formatter writes match what the
+kiosk sends. The container keeps no state: it reports to `rb-cloudapi`'s internal API (`/_internal/...`,
+authenticated with `X-Internal-Token` from `rb-certs/internal.key`), which writes the database.
+
+- **Reservation broker** - `gtcp://<host>:7890/RegistrationBroker/Default.rem` (GenuineChannels TCP, binary
+  formatter). The kiosk calls `IKioskRegister.Register(kioskId, IKioskOperations, versionJson)` and keeps the
+  connection; the broker calls back `Reserve3`, `CancelReservation` and `Ping` on the kiosk's object. A kiosk
+  re-registers by itself after the connection drops (GenuineChannels reconnects; `BrokerServicesProxy`'s timer
+  re-registers). Registrations and disconnects land in `broker_kiosks`; every call the broker makes is in
+  `broker_requests`. A reservation sent from the dashboard is also stored in `cloud_reservations` (with the
+  barcodes the kiosk held), so the kiosk's later pickup goes through the Transaction API as usual.
+- **KioskServices MessageService** - `https://<host>/KioskServices/MessageService.rem` on `rb-cloudapi`
+  (and on port 80). `IMessageService.Process(json)` over HttpChannel + binary formatter: `rb-cloudapi`
+  forwards the request body unchanged to Mono's HttpChannel (`rb-remoting:8090`), which decodes it and posts
+  the JSON to `/_internal/kioskservices/process`. In REST mode (`KioskServicesProtocol = REST`) the kiosk posts
+  `payload=<url-encoded json>` and gets URL-encoded JSON back; `rb-cloudapi` answers that itself. Both modes
+  run the same message handlers (`cloudapi/kioskservices.py`; see `docs/cloud-apis.md`).
+- **Control API** (`http://rb-remoting:8091`, not published): `GET /broker/kiosks`, `GET /health`,
+  `POST /broker/ping|reserve|cancel`; the dashboard's **Reservation broker** page uses it.
+- **GenuineChannels on Mono needs one patch.** The static constructor of
+  `GenuineUniversalServerTransportSink` reflects into Microsoft-only internals of `System.Runtime.Remoting`
+  (`CoreChannel._bufferPool`) and throws on Mono. `remoting/tools/PatchGenuineChannels.cs` (Mono.Cecil, at image
+  build time) replaces that constructor's body with `ret`; it only primed a buffer pool. The DLL is not
+  strong-named, so its identity on the wire is unchanged. Nothing else had to change; the binary formatter on
+  Mono and on the kiosk's .NET Framework interoperate for these types.
+
 ## Admin dashboard
 
 `rb-admin` serves a web UI at **https://localhost:8443** (the same local CA signs it; plain HTTP with
@@ -207,6 +249,7 @@ must also carry `X-Requested-With: rb-admin`, failed logins are slowed down and 
 | Kiosk detail | Status, card reader and Bluefin, per-repository update state (kiosk head vs server head), file-set states and the deployments that apply, recent transactions and events; buttons for Ping, push configuration, file-set check, clock sync, peek and upload logs |
 | Inventory, Catalog, Barcodes | View and edit discs per kiosk (filter by kiosk), titles, barcode -> product |
 | Pricing & promotions | Default / price-level / purchase pricing, promo codes, return promo, campaigns, subscription plans, ads |
+| Reservation broker | Kiosks registered with the legacy broker (connected now or not, registrations, version/pricing JSON); send a reservation to a kiosk (Reserve3), cancel one (CancelReservation), ping; history of every broker call with its result |
 | Transactions | Search authorisations, gift cards, pickups, reservations by reference, e-mail, CPN or last four; detail with rentals, returns, customer, card, request and reconcile bodies; links to rentals, returns, reservations, cards |
 | Update Service | Repositories (revisions, head, label, snapshot, how many stores are current); publish a new revision by uploading files or a folder; rebuild a snapshot; auto-subscribe switch; store x repository matrix showing current / behind / missing and link / unlink / automatic per cell |
 | Update packages | The `data-<date>.zip` seeds in `PACKAGES_DIR`: import selected ones in the background with progress, list editions |
@@ -301,24 +344,25 @@ Endpoint-by-endpoint status, behaviour and inferences are in `docs/cloud-apis.md
 - **Invented** (no client evidence either way): loyalty points and tiers, gift-card starting balance, the
   decline rules of `PAYMENT_MODE=rules`.
 
-### Not covered
+### .NET Remoting (`rb-remoting`) - implemented
 
-- The legacy **GenuineChannels .NET Remoting broker** (`gtcp://blt.accessredbox.net:7890/RegistrationBroker`)
-  used only when `UseLegacyBrokerService` is true. The 1.88 rental code uses the AWS broker path (BrokerRegister
-  over IoT), which is implemented; online reservations pushed *from* the cloud to the kiosk are therefore not
-  delivered (the AWS-side mechanism that called the kiosk is not visible in the client code).
-- `Redbox.KioskServices` MessageService (`https://bl2.accessredbox.net/KioskServices/MessageService.rem`): not
-  loaded by the 1.88 engine, but the older engines in the 2014-2022 seeds use it (`Redbox.DVD.KioskServices.dll`)
-  for authentication, discount codes, customer offers, loyalty and health. Its default transport is .NET
-  Remoting with the binary formatter, which this backend does not speak (the optional REST mode, `payload=<json>`
-  form posts, would be feasible; not done).
+- Legacy reservation broker (GenuineChannels gtcp): register, re-register, disconnect tracking; Reserve3,
+  CancelReservation and Ping pushed from the dashboard. Used only when the rental configuration's
+  `UseLegacyBrokerService` is true; the 1.88 default is the AWS broker path (BrokerRegister over IoT), for which the
+  cloud->kiosk reservation push is still not known (not visible in the client code).
+- KioskServices MessageService, both transports (Remoting and REST). The message handlers are in
+  `cloudapi/kioskservices.py`; their status per message type is in `docs/cloud-apis.md`.
+- Not implemented: the broker's own administrative interfaces (Redbox's server side is not in the image) and
+  GenuineChannels security sessions (the kiosk does not use any).
+
+### Not covered
 - Web pages the old Control Panel / Field Maintenance bundles open in a browser (`fieldvisit`,
   `installchecklist`, `kiosksurvey`.accessredbox.net): not APIs, not served.
 - The Update Client Installer (`localhost:6002`) is a kiosk-local program that is not in the image.
 
 ## Verification
 
-What was run (all containers built and running under WSLC 3.0.3; `rb.ps1 test` = 64 passing tests):
+What was run (all containers built and running under WSLC 3.0.3; `rb.ps1 test` = 92 passing tests):
 
 - **Update store import**: every repository of the kiosk image's store imports; all 11 software
   repositories reconstruct to their head with every SHA-1 checked (kop-v2-engine: 1,051 Redbox VCDIFF deltas,
@@ -371,6 +415,22 @@ What was run (all containers built and running under WSLC 3.0.3; `rb.ps1 test` =
   and log out. File pickers cannot be driven from the test browser, so uploads were tested through the same API
   with multipart requests. The browser test used `ADMIN_TLS=false` because the test browser does not trust the
   local CA; HTTPS was checked with curl.
+- **.NET Remoting** (real kiosk assemblies on Windows .NET Framework 4.x, 32-bit PowerShell, against the Mono
+  container): `tests/clients/run-broker-harness.ps1` runs the decompiled `ReservationServicesProxy` /
+  `BrokerServicesProxy` with Microsoft's GenuineChannels.dll: it registered (version JSON with the pricing policy
+  stored), received a Reserve3 and a CancelReservation sent from the dashboard (from the API and from the
+  browser page) and answered them, with the results in `broker_requests` and the reservation in
+  `cloud_reservations` (`reserved`, then `cancelled`); after `wslc restart rb-remoting` and after a full
+  `rb.ps1 up` it re-registered by itself within seconds. `tests/clients/run-kioskservices-harness.ps1` runs the
+  real `Redbox.KioskServices.Proxy.dll` from the 2024 seed: `ExecuteMessage` (GetPendingStates, Authenticate with
+  the client's TripleDES password, DiscountCodeValidation, an unknown type) completed over Remoting
+  (HttpChannel + binary formatter, through `rb-cloudapi` to Mono) and over REST, on both `http://` (port 80)
+  and `https://` (port 443; the harness accepts the local CA because this PC does not trust it).
+  `tests/test_kioskservices.py` covers every one of the 34 message types (REST, checking replies and database
+  state); `tests/test_remoting.py` covers REST, the forwarding hop, internal-token checks, broker bookkeeping and the
+  dashboard's handling of an unconnected kiosk. Not verified: a whole kiosk engine with `UseLegacyBrokerService`
+  on (the harness fakes the engine services the proxy asks for: settings store, callback queue, configuration)
+  and the 2016 `Redbox.DVD.KioskServices.dll` client.
 - **Not verified**: the real Update Client and Device Service against the backend (both need the CA trusted
   and/or a kiosk id under `WOW6432Node`, i.e. administrator rights; `tests/clients/run-ucs.ps1` is ready for an
   elevated run), and a whole physical kiosk.
