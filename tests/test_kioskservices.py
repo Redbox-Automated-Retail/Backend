@@ -364,7 +364,7 @@ def test_unplayable_return_gives_credit(c):
     auth = ks(c, "Authorize", kiosk, CreditCard=card, Contents=contents)
     ks(c, "Reconcile", kiosk, ReferenceNumber=auth["ReferenceNumber"], CreditCard=card, Contents=contents, Email=email)
     r = ks(c, "UnplayableReturn", kiosk, Barcode=barcode, Email=email, ReturnTime="10/27/2026 9:00:00 PM")
-    assert r["Success"]
+    assert r["Success"] and r["IsUnplayable"] is True  # read by InventoryServicesProxy.MarkAsUnplayable (2016)
     assert c.sqlval("SELECT return_type FROM cloud_returns WHERE barcode = %s", barcode) == 9
     assert c.sqlval("SELECT info->>'credits' FROM cloud_customers WHERE email = %s", email) == "1"
     assert ks(c, "UnplayableReturn", kiosk, Barcode="", Email=email)["Success"] is False

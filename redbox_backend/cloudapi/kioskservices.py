@@ -678,7 +678,8 @@ async def ks_UnplayableReturn(msg, kiosk):
     if customer:
         await _set_info(customer, credits=_credits(customer) + 1)
     await db.record_event(kiosk, SOURCE, "unplayable", {"Barcode": barcode, "Cpn": customer["cpn"] if customer else None})
-    return {"Success": True}
+    # InventoryServicesProxy.MarkAsUnplayable reads IsUnplayable into the engine's "is_unplayable" result.
+    return {"Success": True, "IsUnplayable": True}
 
 
 # ------------------------------------------------------------------ health services (2014-2016)

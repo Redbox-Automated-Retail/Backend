@@ -164,3 +164,14 @@ def test_offer_expiry_is_a_dotnet_date_literal(c):
         assert '"ExpirationDate": "\\/Date(%d)\\/"' % int(expires.timestamp() * 1000) in text
     finally:
         c.sql("DELETE FROM cloud_customer_offers WHERE campaign_id = %s", kid)
+
+
+def test_dashboard_cancel_refused_for_engines_without_cancelreservation(c, admin):
+    """2014-2016 broker clients (1.7) register without "CancelReservation": their IKioskOperations lacks it."""
+    kid = cc.new_kiosk()
+    c.sql("INSERT INTO broker_kiosks (kiosk_id, version, host, connected) VALUES (%s, %s, 'HOST test', true)", kid,
+          json.dumps({"Runtime": "Kiosk Engine", "Version": "1.7.0.9", "Features": 1}))
+    r = admin.post("/api/broker/cancel", json={"kiosk_id": kid, "reference_number": 300000001})
+    assert r.status_code == 409 and "no CancelReservation" in r.json()["detail"]
+    rows = c.sql("SELECT * FROM broker_requests WHERE kiosk_id = %s", kid)
+    assert rows and rows[0]["kind"] == "cancel" and rows[0]["success"] is False

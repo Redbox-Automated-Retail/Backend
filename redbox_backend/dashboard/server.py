@@ -624,6 +624,14 @@ async def broker_reserve(body: dict):
 @app.post("/api/broker/cancel")
 async def broker_cancel(body: dict):
     kiosk_id, ref = int(body["kiosk_id"]), int(body["reference_number"])
+    # Engines before CancelReservation (2014-2016, broker client 1.7) have no such method on IKioskOperations and
+    # say so by leaving "CancelReservation" out of the version JSON they register with.
+    version = await db.fetchval("SELECT version FROM broker_kiosks WHERE kiosk_id = %s", kiosk_id) or {}
+    if isinstance(version, dict) and not version.get("CancelReservation"):
+        detail = (f"kiosk {kiosk_id} (engine {version.get('Version', '?')}) cannot cancel a reservation through the "
+                  "broker: its IKioskOperations has no CancelReservation; the hold ends when the reservation expires")
+        await _broker_record(kiosk_id, "cancel", ref, body, None, False, detail)
+        raise HTTPException(409, detail)
     try:
         result = await remoting("/broker/cancel", {"kioskId": kiosk_id, "referenceNumber": ref})
     except HTTPException as e:
