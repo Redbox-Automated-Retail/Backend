@@ -23,12 +23,17 @@ public static class StubHub
     public static void Set(string member, object value) { Values[member] = _ => value; }
     public static void Set(string member, Func<object[], object> f) { Values[member] = f; }
 
+    /// <summary>For generic members (T GetValue&lt;T&gt;(...)): the function also gets the return type.</summary>
+    public static readonly Dictionary<string, Func<Type, object[], object>> Typed = new Dictionary<string, Func<Type, object[], object>>();
+
     public static object Invoke(string iface, string member, Type ret, object[] args)
     {
         string key = iface + "." + member;
         if (Trace) lock (Calls) Calls.Add(key);
         Func<object[], object> f;
         if (Values.TryGetValue(key, out f)) return f(args);
+        Func<Type, object[], object> g;
+        if (Typed.TryGetValue(key, out g)) return g(ret, args) ?? Default(ret);
         return Default(ret);
     }
 
