@@ -14,7 +14,8 @@
     rb.ps1 set-admin-password [user]  set the dashboard login (hash stored in local\backend.env)
     rb.ps1 admin <args...>       python -m redbox_backend admin <args> inside rb-iot
     rb.ps1 admin-in <dir> <args> same, in a one-off container with <dir> mounted at /in
-    rb.ps1 import-store <path>   import a kiosk's "REDS\Update Manager\.store" (repositories, config/store files)
+    rb.ps1 import-store <path>   import a kiosk's "REDS\Update Manager\.store", a data-<date>.zip seed or a folder of seeds
+    rb.ps1 import-packages [dir] import every data-*.zip seed in PACKAGES_DIR (or dir), read-only
     rb.ps1 export-ca             copy ca.crt / ca.cer to backend\certs\ for installing on kiosks
     rb.ps1 test                  run the protocol tests inside a container against the running stack
 
@@ -111,7 +112,12 @@ switch ($Command) {
         $adminCmd = @("python", "-m", "redbox_backend", "dashboard", "--port", $adminPort)
         if ($vars["ADMIN_TLS"] -eq "false") { $adminCmd += "--no-tls" }
         if (-not $vars["ADMIN_PASSWORD_HASH"]) { Write-Warning "No admin password set: run 'rb.ps1 set-admin-password' (nobody can log in to the dashboard until then)." }
-        Start-Service "rb-admin" "rb-admin" @("${adminBind}:${adminPort}:${adminPort}") $adminCmd @() @{ IOT_ADMIN_URL = "http://rb-iot:8081" }
+        # The dashboard can import update-store seeds from PACKAGES_DIR (mounted read-only).
+        $pkgMount = @(); $pkgEnv = @{ IOT_ADMIN_URL = "http://rb-iot:8081" }
+        if ($vars["PACKAGES_DIR"] -and (Test-Path $vars["PACKAGES_DIR"])) {
+            $pkgMount = @("-v", "$((Resolve-Path $vars['PACKAGES_DIR']).Path):/packages:ro"); $pkgEnv["RB_PACKAGES_DIR"] = "/packages"
+        }
+        Start-Service "rb-admin" "rb-admin" @("${adminBind}:${adminPort}:${adminPort}") $adminCmd $pkgMount $pkgEnv
         Start-Service "rb-iot" "rb-iot" (@("${bind}8883:8883", "127.0.0.1:8081:8081") + $mplain) @("python", "-m", "redbox_backend", "iot")
         & $PSCommandPath status
     }
@@ -175,12 +181,25 @@ switch ($Command) {
             @envs $Image python -m redbox_backend admin @($Rest[1..($Rest.Count - 1)])
     }
     "import-store" {
-        if (-not $Rest) { throw "usage: rb.ps1 import-store <path to 'REDS\Update Manager\.store'> [admin import-store options]" }
-        $store = (Resolve-Path $Rest[0]).Path
+        if (-not $Rest) { throw "usage: rb.ps1 import-store <.store folder | data-*.zip | folder of zips> [admin import-store options]" }
+        $src = (Resolve-Path $Rest[0]).Path
+        if (Test-Path $src -PathType Leaf) { $mount = Split-Path $src; $arg = "/src/" + (Split-Path $src -Leaf) }
+        else { $mount = $src; $arg = "/src" }
         $opts = if ($Rest.Count -gt 1) { $Rest[1..($Rest.Count - 1)] } else { @("--config-files", "--store-files") }
         $envs = Env-Args
-        W run --rm --network $Network -v "$($Volumes.data):/data" -v "$($Volumes.certs):/certs" -v "${store}:/store:ro" `
-            @envs $Image python -m redbox_backend admin import-store /store @opts
+        W run --rm --network $Network -v "$($Volumes.data):/data" -v "$($Volumes.certs):/certs" -v "${mount}:/src:ro" `
+            @envs $Image python -m redbox_backend admin import-store $arg @opts
+    }
+    "import-packages" {
+        # Every data-*.zip in PACKAGES_DIR (or the given folder), read-only; the newest is served.
+        $vars = Read-Env
+        $dir = if ($Rest) { $Rest[0] } else { $vars["PACKAGES_DIR"] }
+        if (-not $dir -or -not (Test-Path $dir)) { throw "usage: rb.ps1 import-packages <folder with data-*.zip> (or set PACKAGES_DIR)" }
+        $dir = (Resolve-Path $dir).Path
+        $opts = if ($Rest.Count -gt 1) { $Rest[1..($Rest.Count - 1)] } else { @() }
+        $envs = Env-Args
+        W run --rm --network $Network -v "$($Volumes.data):/data" -v "$($Volumes.certs):/certs" -v "${dir}:/packages:ro" `
+            @envs $Image python -m redbox_backend admin import-store /packages @opts
     }
     "export-ca" {
         $out = Join-Path $Backend "certs"
@@ -192,10 +211,15 @@ switch ($Command) {
         # Uses the working tree's code (mounted over /app) so tests can be re-run without a rebuild.
         $ucs = if (Test-Path $UcsEncryptionSource) { @("-v", "$(Split-Path $UcsEncryptionSource):/ucs:ro", "-e", "UCS_ENCRYPTION_SOURCE=/ucs/EncryptionService.cs") } else { @() }
         $sel = if ($Rest) { $Rest } else { @("tests") }
+        # Real update-store seeds as read-only fixtures (tests/test_packages.py), when PACKAGES_DIR is set.
+        $tv = Read-Env
+        if ($tv["PACKAGES_DIR"] -and (Test-Path $tv["PACKAGES_DIR"])) {
+            $ucs += @("-v", "$((Resolve-Path $tv['PACKAGES_DIR']).Path):/packages:ro", "-e", "RB_PACKAGES_DIR=/packages")
+        }
         $envs = Env-Args
         W run --rm --network $Network -v "$($Volumes.data):/data" -v "$($Volumes.certs):/certs" -v "${Backend}:/app:ro" @ucs @envs `
             -e CLOUDAPI_URL=https://rb-cloudapi -e UPDATESVC_HOST=rb-updatesvc -e IOT_HOST=rb-iot -e PYTHONDONTWRITEBYTECODE=1 $Image `
-            sh -c "pip install -q pytest httpx >/dev/null 2>&1; cd /app && python -m pytest -p no:cacheprovider -q $($sel -join ' ')"
+            sh -c "pip install -q pytest httpx >/dev/null 2>&1; cd /app && python -m pytest -p no:cacheprovider -q -s $($sel -join ' ')"
     }
     default {
         Get-Help $PSCommandPath -Detailed

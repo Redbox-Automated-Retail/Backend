@@ -1,7 +1,12 @@
 """Administration CLI: `python -m redbox_backend admin <command> ...` (run inside any backend container).
 
 Update Service (legacy updatemgrd):
-  import-store <.store dir> [--repo NAME ...] [--no-snapshot] [--config-files] [--store-files] [--rewrite OLD=NEW ...]
+  import-store <source>... [--repo NAME ...] [--dvd-data latest|all|none] [--no-snapshot] [--config-files]
+               [--store-files] [--rewrite OLD=NEW ...]
+                                     source = a kiosk .store directory, a data-<date>.zip installer seed, or a
+                                     folder of seeds; each becomes an edition, the newest one is served
+  editions                           list imported editions
+  pin <repo> <hash|label|latest>     serve an older revision (fresh kiosks get its snapshot; nobody is moved back)
   snapshot <repo>|--all              rebuild the full-file seed snapshot of a repository head
   publish <repo> <dir> --target-path 'C:\\Program Files\\...' [--label L]
                                      add a revision from a local directory (deltas via xdelta3)
@@ -33,24 +38,33 @@ import sys
 import urllib.request
 
 from .. import blobs, config, db, filesets
-from ..updatesvc import repo
+from ..updatesvc import editions, repo
 
 
 def _bool(s):
     return str(s).lower() in ("1", "true", "yes", "on")
 
 
+def expand_sources(paths):
+    """Directories that hold data-*.zip seeds expand to those zips; anything else is used as is."""
+    out = []
+    for p in map(pathlib.Path, paths):
+        zips = sorted(p.glob("*.zip")) if p.is_dir() and not (p / ".repository").exists()             and not any(p.glob("*/.revlog")) else []
+        out.extend(zips or [p])
+    return out
+
+
 async def import_store(args):
-    store = pathlib.Path(args.store)
-    rep_root = store / ".repository" if (store / ".repository").is_dir() else store
-    names = args.repo or sorted(p.name for p in rep_root.iterdir() if (p / ".revlog").exists())
+    sources = expand_sources(args.store)
     rewrites = [r.split("=", 1) for r in args.rewrite or []]
-    for name in names:
-        print(json.dumps(await repo.import_repository(rep_root / name, name, replace=not args.keep)))
-        if not args.no_snapshot:
-            res = await repo.build_snapshot(name)
-            print(json.dumps({k: v for k, v in res.items() if k != "problems"} | {"problems": len(res["problems"])}))
-    if args.config_files and (store / ".configfiles").is_dir():
+
+    async def progress(msg):
+        print(msg, flush=True)
+    for res in await editions.import_sources(sources, dvd_data=args.dvd_data, repos=args.repo,
+                                             snapshots=not args.no_snapshot, progress=progress):
+        print(json.dumps(res, default=str))
+    store = sources[-1]
+    if args.config_files and store.is_dir() and (store / ".configfiles").is_dir():
         for d in sorted((store / ".configfiles").iterdir()):
             cfg = d / ".config"
             if not cfg.is_file():
@@ -66,7 +80,7 @@ async def import_store(args):
                 int(data["OID"]), data["Name"], data["Path"], int(data["GenerationOID"]),
                 db.jsonb(data["ConfigurationData"]))
             print(f"config file {data['OID']} {data['Name']} generation {data['GenerationOID']}")
-    if args.store_files and (store / ".storefiles").is_dir():
+    if args.store_files and store.is_dir() and (store / ".storefiles").is_dir():
         for state in sorted((store / ".storefiles").glob("*.state")):
             st = json.loads(state.read_text(encoding="utf-8-sig"))
             staged = state.with_suffix(".staged")
@@ -81,6 +95,28 @@ async def import_store(args):
                 int(req["StoreFile"]), dest.split("\\")[-1], dest, int(req["StoreFileData"]),
                 blobs.put_file(staged))
             print(f"store file {req['StoreFile']} -> {dest}")
+
+
+async def cmd_editions(args):
+    for e in await db.fetch("SELECT * FROM upd_editions ORDER BY edition_date"):
+        print(f"{e['name']:20} {e['edition_date']} {sum(e['revisions'].values()):6} revisions in {len(e['heads'])} repositories"
+              f"  ({e['source']})")
+
+
+async def cmd_pin(args):
+    rows = await db.fetch("SELECT hash, label FROM upd_revisions WHERE repo=%s ORDER BY seq", args.repo)
+    if args.revision == "latest":
+        await db.execute("UPDATE upd_repositories SET serve_head=NULL WHERE name=%s", args.repo)
+        print(f"{args.repo}: serving the newest revision")
+        return
+    match = [r for r in rows if r["hash"].startswith(args.revision.upper()) or r["label"] == args.revision]
+    if not match:
+        raise SystemExit(f"no revision or label {args.revision} in {args.repo}")
+    head = match[-1]["hash"]
+    await db.execute("UPDATE upd_repositories SET serve_head=%s WHERE name=%s", head, args.repo)
+    res = await repo.build_snapshot(args.repo, head)
+    print(f"{args.repo}: serving {head} ({match[-1]['label']}); snapshot {res['files']} files from {res['source']},"
+          f" {len(res['problems'])} problems")
 
 
 async def cmd_snapshot(args):
@@ -228,16 +264,20 @@ async def cmd_events(args):
 def parser():
     ap = argparse.ArgumentParser(prog="admin", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    p = sub.add_parser("import-store"); p.add_argument("store"); p.add_argument("--repo", action="append")
+    p = sub.add_parser("import-store"); p.add_argument("store", nargs="+"); p.add_argument("--repo", action="append")
+    p.add_argument("--dvd-data", choices=["latest", "all", "none"], default="latest",
+                   help="which sources' dvd-data to import (it is ~1 GB per seed)")
     p.add_argument("--no-snapshot", action="store_true"); p.add_argument("--config-files", action="store_true")
     p.add_argument("--store-files", action="store_true"); p.add_argument("--rewrite", action="append")
-    p.add_argument("--keep", action="store_true", help="add to existing repositories instead of replacing them")
     p.set_defaults(fn=import_store)
     p = sub.add_parser("snapshot"); p.add_argument("repo", nargs="?"); p.add_argument("--all", action="store_true")
     p.set_defaults(fn=cmd_snapshot)
     p = sub.add_parser("publish"); p.add_argument("repo"); p.add_argument("dir"); p.add_argument("--target-path", required=True)
     p.add_argument("--label"); p.add_argument("--no-deltas", action="store_true"); p.set_defaults(fn=cmd_publish)
     sub.add_parser("repos").set_defaults(fn=cmd_repos)
+    sub.add_parser("editions").set_defaults(fn=cmd_editions)
+    p = sub.add_parser("pin"); p.add_argument("repo"); p.add_argument("revision", help="hash prefix, label or 'latest'")
+    p.set_defaults(fn=cmd_pin)
     sub.add_parser("stores").set_defaults(fn=cmd_stores)
     p = sub.add_parser("store-set"); p.add_argument("number"); p.add_argument("--enabled")
     p.add_argument("--time-zone"); p.add_argument("--correct-time"); p.set_defaults(fn=cmd_store_set)

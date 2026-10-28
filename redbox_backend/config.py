@@ -35,6 +35,11 @@ UPDATE_CONTENT_BASE_URL = _env("UPDATE_CONTENT_BASE_URL", "http://updatesvc.redb
 UPDATE_SERVICE_KEY1 = _env("UPDATE_SERVICE_KEY1")
 UPDATE_SERVICE_KEY2 = _env("UPDATE_SERVICE_KEY2")
 
+# Store installer (`installer start`): hosts-file lines it is given (pipe separated). Built from the host
+# names below and BACKEND_PUBLIC_IP when empty.
+INSTALLER_HOST_ENTRIES = _env("INSTALLER_HOST_ENTRIES", "")
+BACKEND_PUBLIC_IP = _env("BACKEND_PUBLIC_IP", "127.0.0.1")
+
 # Kiosk cloud HTTPS APIs.
 CLOUD_API_PORT = int(_env("CLOUD_API_PORT", "443"))
 # Base URL of the S3 stand-in that presigned URLs point at.

@@ -63,6 +63,26 @@ def put_file(src) -> str:
     return key
 
 
+def put_stream(stream) -> str:
+    """Store a file-like object without holding it in memory."""
+    h = hashlib.sha1()
+    tmp_dir = root() / "_incoming"
+    tmp_dir.mkdir(exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=tmp_dir)
+    with os.fdopen(fd, "wb") as out:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            h.update(chunk)
+            out.write(chunk)
+    key = h.hexdigest().upper()
+    target = path(key)
+    if target.exists():
+        os.unlink(tmp)
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(tmp, target)
+    return key
+
+
 def get_bytes(key: str) -> bytes:
     return path(key).read_bytes()
 

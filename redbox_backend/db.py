@@ -86,6 +86,15 @@ async def execute(sql, *args):
         return cur.rowcount
 
 
+async def executemany(sql, rows):
+    rows = list(rows)
+    if not rows:
+        return
+    async with pool().connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.executemany(sql, rows)
+
+
 def jsonb(value):
     """Wrap a Python value for a jsonb parameter."""
     return Jsonb(value, dumps=lambda v: json.dumps(v, default=str))

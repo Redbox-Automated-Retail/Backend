@@ -44,61 +44,6 @@ def _read_json(p):
 
 # --------------------------------------------------------------------------------------------- import
 
-async def import_repository(repo_dir, name=None, replace=False):
-    """Import one `.store/.repository/<name>` directory (revlog + .patch files)."""
-    repo_dir = pathlib.Path(repo_dir)
-    name = name or repo_dir.name
-    revlog_dir = repo_dir / ".revlog"
-    if revlog_dir.is_file():  # legacy single-file PersistentList
-        entries = _read_json(revlog_dir)
-    else:
-        files = sorted((p for p in revlog_dir.iterdir() if p.name.isdigit()), key=lambda p: int(p.name))
-        entries = [_read_json(p) for p in files]
-    if replace:
-        await db.execute("DELETE FROM upd_repositories WHERE name = %s", name)
-    await db.execute("INSERT INTO upd_repositories (name) VALUES (%s) ON CONFLICT DO NOTHING", name)
-    existing = {r["hash"]: r["seq"] for r in await db.fetch("SELECT hash, seq FROM upd_revisions WHERE repo=%s", name)}
-    next_seq = (max(existing.values()) + 1) if existing else 0
-    stored = missing = 0
-    added = {}  # revision hash -> next change index, for revisions inserted by this import
-    for entry in entries:
-        h = entry["Hash"].upper()
-        if h in existing:
-            continue
-        if h in added:
-            # Real revlogs can repeat a hash (kop-shared-bundles has one hash three times in a row): the
-            # client finds the first entry, so fold the repeated entries' changes into it.
-            start = added[h]
-        else:
-            await db.execute("INSERT INTO upd_revisions (repo, seq, hash, label) VALUES (%s,%s,%s,%s)",
-                             name, next_seq, h, entry.get("Label"))
-            next_seq += 1
-            start = 0
-        seen = {(c["target_path"], c["target_name"], c["version_hash"]) for c in await db.fetch(
-            "SELECT target_path, target_name, version_hash FROM upd_changes WHERE repo=%s AND rev_hash=%s", name, h)}
-        changes = [ch for ch in entry.get("Changes") or []
-                   if (ch["TargetPath"], ch["TargetName"], ch["VersionHash"].upper()) not in seen]
-        added[h] = start + len(changes)
-        for idx, ch in enumerate(changes, start):
-            blob = None
-            if not ch.get("Composite"):
-                p = repo_dir / patch_name(h, ch["TargetPath"], ch["TargetName"])
-                if p.is_file():
-                    blob = blobs.put_file(p)
-                    stored += 1
-                else:
-                    missing += 1
-            await db.execute(
-                "INSERT INTO upd_changes (repo, rev_hash, idx, target_name, target_path, version_hash, content_hash,"
-                " is_seed, composite, blob) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                name, h, idx, ch["TargetName"], ch["TargetPath"], ch["VersionHash"].upper(),
-                (ch.get("ContentHash") or "").upper() or None, bool(ch.get("IsSeed")), bool(ch.get("Composite")),
-                blob)
-    log.info("imported %s: %d revisions in log, %d content files stored, %d missing", name, len(entries),
-             stored, missing)
-    return {"repository": name, "revisions": len(entries), "stored": stored, "missing": missing}
-
-
 # ----------------------------------------------------------------------------------- reconstruction
 
 def xdelta_apply(source: bytes, patch: bytes) -> bytes:
@@ -131,19 +76,38 @@ def xdelta_encode(source: bytes, target: bytes) -> bytes:
             return f.read()
 
 
-async def _history(repo):
-    revs = await db.fetch("SELECT seq, hash, label FROM upd_revisions WHERE repo=%s ORDER BY seq", repo)
-    changes = await db.fetch("SELECT c.* FROM upd_changes c JOIN upd_revisions r ON r.repo=c.repo AND r.hash=c.rev_hash"
-                             " WHERE c.repo=%s ORDER BY r.seq, c.idx", repo)
+async def _history(repo, edition=None):
+    if edition:
+        revs = await db.fetch("SELECT seq, hash, label FROM upd_edition_revisions WHERE edition=%s AND repo=%s"
+                              " ORDER BY seq", edition, repo)
+        changes = await db.fetch("SELECT * FROM upd_edition_changes WHERE edition=%s AND repo=%s ORDER BY rev_hash, idx",
+                                 edition, repo)
+    else:
+        revs = await db.fetch("SELECT seq, hash, label FROM upd_revisions WHERE repo=%s ORDER BY seq", repo)
+        changes = await db.fetch("SELECT c.* FROM upd_changes c JOIN upd_revisions r ON r.repo=c.repo AND"
+                                 " r.hash=c.rev_hash WHERE c.repo=%s ORDER BY r.seq, c.idx", repo)
     by_rev = {}
     for c in changes:
         by_rev.setdefault(c["rev_hash"], []).append(c)
     return revs, by_rev
 
 
-async def reconstruct_head(repo, upto_hash=None):
-    """Return ({(path,name): (version_hash, blob)}, head_hash, problems) for the repository at a revision."""
-    revs, by_rev = await _history(repo)
+def _xdelta_apply_blobs(source_key, patch_key):
+    with tempfile.TemporaryDirectory() as td:
+        out = os.path.join(td, "out")
+        res = subprocess.run(["xdelta3", "-f", "-d", "-s", str(blobs.path(source_key)), str(blobs.path(patch_key)), out],
+                             capture_output=True)
+        if res.returncode != 0 or res.stderr.strip():
+            raise RuntimeError("xdelta3 failed: " + res.stderr.decode(errors="replace").strip())
+        return blobs.put_file(out)
+
+
+async def reconstruct_head(repo, upto_hash=None, edition=None):
+    """Return ({(path,name): (version_hash, blob)}, head_hash, problems) for the repository at a revision.
+
+    Works on blobs (files), not in memory: dvd-data versions are hundreds of MB.
+    """
+    revs, by_rev = await _history(repo, edition)
     if not revs:
         return {}, None, ["repository has no revisions"]
     if upto_hash:
@@ -152,7 +116,7 @@ async def reconstruct_head(repo, upto_hash=None):
             raise ValueError(f"{repo}: unknown revision {upto_hash}")
         revs = revs[: idx + 1]
     head = revs[-1]["hash"]
-    current = {}     # key -> (version_hash, bytes or None)
+    current = {}     # key -> (version_hash, blob key or None)
     latest = {}      # key -> latest version hash listed (placeholders included)
     problems = []
     for r in revs:
@@ -161,34 +125,33 @@ async def reconstruct_head(repo, upto_hash=None):
             latest[key] = c["version_hash"]
             if c["composite"] or not c["blob"]:
                 continue
-            data = blobs.get_bytes(c["blob"]) if blobs.exists(c["blob"]) else None
-            if data is None:
+            if not blobs.exists(c["blob"]):
                 problems.append(f"missing content for {key[1]} at {r['hash']}")
                 current[key] = (c["version_hash"], None)
                 continue
             if c["is_seed"]:
-                content = data
+                result_key = c["blob"]
             else:
                 prev = current.get(key)
                 if not prev or prev[1] is None:
                     current[key] = (c["version_hash"], None)
                     continue
                 try:
-                    content = xdelta_apply(prev[1], data)
+                    result_key = _xdelta_apply_blobs(prev[1], c["blob"])
                 except RuntimeError as e:
                     problems.append(f"{key[1]} at {r['hash']}: {e}")
                     current[key] = (c["version_hash"], None)
                     continue
-            if blobs.sha1_hex(content) != c["version_hash"]:
+            if result_key != c["version_hash"]:  # blob keys are the SHA-1 of the content
                 problems.append(f"{key[1]} at {r['hash']}: SHA-1 mismatch after patch")
                 current[key] = (c["version_hash"], None)
                 continue
-            current[key] = (c["version_hash"], content)
+            current[key] = (c["version_hash"], result_key)
     result = {}
     for key, version in latest.items():
         have = current.get(key)
         if have and have[1] is not None and have[0] == version:
-            result[key] = (version, blobs.put_bytes(have[1]))
+            result[key] = have
         elif have is None:
             pass  # only ever a placeholder: installed by the image, not shipped
         else:
@@ -196,18 +159,43 @@ async def reconstruct_head(repo, upto_hash=None):
     return result, head, problems
 
 
-async def build_snapshot(repo):
-    files, head, problems = await reconstruct_head(repo)
+async def served_head(repo):
+    """The revision offered to kiosks: the pin if set and known, else the newest revision."""
+    row = await db.fetchrow("SELECT serve_head FROM upd_repositories WHERE name=%s", repo)
+    newest = await db.fetchval("SELECT hash FROM upd_revisions WHERE repo=%s ORDER BY seq DESC LIMIT 1", repo)
+    pin = row and row["serve_head"]
+    if pin and await db.fetchval("SELECT 1 FROM upd_revisions WHERE repo=%s AND hash=%s", repo, pin):
+        return pin
+    return newest
+
+
+async def build_snapshot(repo, head=None):
+    """Full-file seed of the repository at `head` (default: the served head).
+
+    The served history can lack content for old revisions (newer seeds trim it), so when it cannot rebuild the
+    wanted revision the editions that contain it are tried, oldest first.
+    """
+    from . import editions as editions_mod
+    head = head or await served_head(repo)
     if head is None:
-        return {"repository": repo, "files": 0, "problems": problems}
-    await db.execute("DELETE FROM upd_snapshots WHERE repo=%s", repo)
-    for (tp, tn), (vh, blob) in files.items():
-        await db.execute("INSERT INTO upd_snapshots (repo, head_hash, target_name, target_path, version_hash, blob)"
-                         " VALUES (%s,%s,%s,%s,%s,%s)", repo, head, tn, tp, vh, blob)
+        return {"repository": repo, "files": 0, "problems": ["repository has no revisions"]}
+    files, _, problems = await reconstruct_head(repo, head)
+    source = "served history"
+    if problems:
+        for ed in await editions_mod.editions_containing(repo, head):
+            f2, _, p2 = await reconstruct_head(repo, head, edition=ed)
+            if len(p2) < len(problems) or (len(p2) == len(problems) and len(f2) > len(files)):
+                files, problems, source = f2, p2, f"edition {ed}"
+            if not problems:
+                break
+    await db.execute("DELETE FROM upd_snapshots WHERE repo=%s AND head_hash=%s", repo, head)
+    await db.executemany("INSERT INTO upd_snapshots (repo, head_hash, target_name, target_path, version_hash, blob)"
+                         " VALUES (%s,%s,%s,%s,%s,%s)",
+                         [(repo, head, tn, tp, vh, blob) for (tp, tn), (vh, blob) in files.items()])
     for p in problems[:20]:
         log.warning("%s snapshot: %s", repo, p)
-    log.info("%s snapshot at %s: %d files, %d problems", repo, head, len(files), len(problems))
-    return {"repository": repo, "head": head, "files": len(files), "problems": problems}
+    log.info("%s snapshot at %s from %s: %d files, %d problems", repo, head, source, len(files), len(problems))
+    return {"repository": repo, "head": head, "files": len(files), "source": source, "problems": problems}
 
 
 # ------------------------------------------------------------------------------------------ publish
@@ -239,7 +227,8 @@ async def publish_revision(repo, files, label=None, use_deltas=True):
     if not items:
         return None
     seq = await db.fetchval("SELECT coalesce(max(seq), -1) + 1 FROM upd_revisions WHERE repo=%s", repo)
-    await db.execute("INSERT INTO upd_revisions (repo, seq, hash, label) VALUES (%s,%s,%s,%s)", repo, seq, rev_hash, label)
+    await db.execute("INSERT INTO upd_revisions (repo, seq, hash, label, origin) VALUES (%s,%s,%s,%s,'published')",
+                     repo, seq, rev_hash, label)
     for idx, it in enumerate(items):
         await db.execute(
             "INSERT INTO upd_changes (repo, rev_hash, idx, target_name, target_path, version_hash, content_hash,"
@@ -285,8 +274,12 @@ async def change_set_for(repo, client_head):
     revs, by_rev = await _history(repo)
     if not revs:
         return None
+    pin = await served_head(repo)
+    revs = revs[: next(i for i, r in enumerate(revs) if r["hash"] == pin) + 1]
     head = revs[-1]["hash"]
     client_head = (client_head or "").upper()
+    if client_head and await db.fetchval("SELECT 1 FROM upd_revisions WHERE repo=%s AND hash=%s", repo, client_head)             and not any(r["hash"] == client_head for r in revs):
+        return None  # the kiosk is already past the pinned head: never move it back
     if client_head == head:
         return None
     index = next((i for i, r in enumerate(revs) if r["hash"] == client_head), None)

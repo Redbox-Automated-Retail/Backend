@@ -268,18 +268,36 @@ async def cmd_server_poll(params, reply):
 # ------------------------------------------------------------------------------------- installer
 
 async def cmd_installer(form, params, reply):
+    """The store installer's first contact (installer-steps.lua in the 3.1.0.48 store installer).
+
+    The script requires DataFileExpiration, InstallerExpiration, CurrentDateTime, URL, HostEntries and guid to be
+    non-empty strings (Redbox.UpdateManager.Remoting.UpdateService.StartInstaller keeps only string values), treats
+    expiration 0 as expired and >= 1 as a warning (so -1 = never expires), sets the clock from CurrentDateTime
+    (DateTime.Parse, UTC) and only probes URL with a GET. HostEntries is pipe separated hosts-file lines; the
+    script that wrote them to the hosts file is commented out in that installer.
+    """
     if form == "start":
         guid = str(uuid.uuid4())
-        await db.execute("INSERT INTO upd_installer_sessions (guid, hash, version) VALUES (%s,%s,%s)",
-                         guid, params.get("hash"), params.get("version"))
+        edition = await db.fetchval("SELECT name FROM upd_editions WHERE heads->>'dvd-data' = %s ORDER BY edition_date"
+                                    " DESC LIMIT 1", (params.get("hash") or "").upper())
+        await db.execute("INSERT INTO upd_installer_sessions (guid, hash, version, log) VALUES (%s,%s,%s,%s)",
+                         guid, params.get("hash"), params.get("version"),
+                         db.jsonb([{"name": "data-file-edition", "value": edition}]))
+        await db.record_event(None, "updatesvc", "installer-start", {"guid": guid, "hash": params.get("hash"),
+                                                                     "version": params.get("version"), "edition": edition})
         now = dotnet.utcnow()
-        reply.message(dumps({"DataFileExpiration": "30", "InstallerExpiration": "30",
-                             "CurrentDateTime": now.strftime("%m/%d/%Y %H:%M:%S"),
-                             "URL": config.UPDATE_CONTENT_BASE_URL, "HostEntries": "", "guid": guid,
-                             "ErrorMessage": ""}))
+        hosts = config.INSTALLER_HOST_ENTRIES or "|".join(
+            f"{config.BACKEND_PUBLIC_IP} {h}" for h in config.all_hostnames()
+            if h != "localhost" and not h.startswith("rb-"))
+        reply.message(dumps({"DataFileExpiration": "-1", "InstallerExpiration": "-1",
+                             "CurrentDateTime": now.strftime("%Y-%m-%d %H:%M:%S"),
+                             "URL": config.UPDATE_CONTENT_BASE_URL.rstrip("/") + "/_health", "HostEntries": hosts,
+                             "guid": guid, "ErrorMessage": ""}))
     elif form == "log":
         await db.execute("UPDATE upd_installer_sessions SET log = log || %s WHERE guid = %s",
                          db.jsonb([{"name": params.get("name"), "value": params.get("value")}]), params.get("guid"))
+        await db.record_event(None, "updatesvc", "installer-log", {"guid": params.get("guid"), "name": params.get("name"),
+                                                                   "value": params.get("value")})
     else:
         raise CommandError("U404", f"Unknown installer form '{form}'.")
 
