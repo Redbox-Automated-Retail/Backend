@@ -347,11 +347,15 @@ Endpoint-by-endpoint status, behaviour and inferences are in `docs/cloud-apis.md
 ### .NET Remoting (`rb-remoting`) - implemented
 
 - Legacy reservation broker (GenuineChannels gtcp): register, re-register, disconnect tracking; Reserve3,
-  CancelReservation and Ping pushed from the dashboard. Used only when the rental configuration's
-  `UseLegacyBrokerService` is true; the 1.88 default is the AWS broker path (BrokerRegister over IoT), for which the
-  cloud->kiosk reservation push is still not known (not visible in the client code).
-- KioskServices MessageService, both transports (Remoting and REST). The message handlers are in
-  `cloudapi/kioskservices.py`; their status per message type is in `docs/cloud-apis.md`.
+  CancelReservation and Ping pushed from the dashboard. The 1.88 rental code registers with it when the
+  `kioskengine/Jarvis/UseLegacyBrokerService` setting is true (its default) and also with the AWS broker path
+  (BrokerRegister over IoT), for which the cloud->kiosk reservation push is still not known. The 2014-2016 engines
+  (broker client 1.7, `Redbox.DVD.BrokerServices.dll`) always use it; their `IKioskOperations` has no
+  CancelReservation, so the dashboard refuses Cancel for kiosks that register without `"CancelReservation": true`.
+- KioskServices MessageService, both transports (Remoting and REST), all 33 MessageTypes the 2014-2016, 1.80 and
+  1.81 clients send. The handlers are in `cloudapi/kioskservices.py`; their status per message type is in
+  `docs/cloud-apis.md`. Replies are written by `kioskservices.dumps`, which emits .NET date literals
+  (`"\/Date(ms)\/"`) where the client reads a raw `(DateTime)` (customer offer `ExpirationDate`).
 - Not implemented: the broker's own administrative interfaces (Redbox's server side is not in the image) and
   GenuineChannels security sessions (the kiosk does not use any).
 
@@ -362,7 +366,7 @@ Endpoint-by-endpoint status, behaviour and inferences are in `docs/cloud-apis.md
 
 ## Verification
 
-What was run (all containers built and running under WSLC 3.0.3; `rb.ps1 test` = 92 passing tests):
+What was run (all containers built and running under WSLC 3.0.3; `rb.ps1 test` = 94 passing tests):
 
 - **Update store import**: every repository of the kiosk image's store imports; all 11 software
   repositories reconstruct to their head with every SHA-1 checked (kop-v2-engine: 1,051 Redbox VCDIFF deltas,
@@ -426,11 +430,44 @@ What was run (all containers built and running under WSLC 3.0.3; `rb.ps1 test` =
   the client's TripleDES password, DiscountCodeValidation, an unknown type) completed over Remoting
   (HttpChannel + binary formatter, through `rb-cloudapi` to Mono) and over REST, on both `http://` (port 80)
   and `https://` (port 443; the harness accepts the local CA because this PC does not trust it).
-  `tests/test_kioskservices.py` covers every one of the 34 message types (REST, checking replies and database
-  state); `tests/test_remoting.py` covers REST, the forwarding hop, internal-token checks, broker bookkeeping and the
-  dashboard's handling of an unconnected kiosk. Not verified: a whole kiosk engine with `UseLegacyBrokerService`
-  on (the harness fakes the engine services the proxy asks for: settings store, callback queue, configuration)
-  and the 2016 `Redbox.DVD.KioskServices.dll` client.
+  `tests/test_kioskservices.py` covers every one of the 33 message types (REST, checking replies and database
+  state); `tests/test_remoting.py` covers REST, the forwarding hop, the .NET date literal, internal-token checks,
+  broker bookkeeping and the dashboard's handling of an unconnected kiosk and of a kiosk without CancelReservation.
+- **Every MessageType through the real clients' own code** (both transports, `https://`): the clients' service
+  methods build each request from engine state, send it, and parse the reply into the engine's result objects;
+  a case fails on a wrong `Success`, on any exception the proxy logs and swallows, or on a failed check. Engine
+  services come from stubs (`tests/clients/EngineStubs.cs`: a session with a card and a one-title cart, the
+  message queue forwarding as the engine's does, a real Lua VM for result tables); the engine assemblies are the
+  ones each proxy shipped with, exported from the imported seeds with `admin export`.
+  - `run-kioskservices-cases.ps1`: `Redbox.KioskServices.Proxy` 1.80.0.12 (kop-v2-engine revision
+    "kop-v2-engine-Ultima"): all 25 types it sends, over Remoting and REST. The customer offer's
+    `ExpirationDate` arrives as the right UTC date (before the fix the client parsed it as today).
+  - `run-kioskservices-cases-2016.ps1`: the 2014-2016 `Redbox.DVD.KioskServices.dll` 1.8.0.37 (engine 1.7.0.9 of
+    the data-10282016 seed; proxies, IMessageService and GenuineChannels ILMerged and internal, driven by
+    reflection): all 25 types it sends, incl. the 8 only it sends (GetCustomer, RBiFreeTrialRequest,
+    GetCustomerCredits, RentalCount, UnplayableReturn, KioskPing, KioskAlert, AuditEvent). This found that
+    UnplayableReturn must answer `IsUnplayable` (fixed).
+  - Together all 33 handlers ran through real client code over both transports; each call appeared server-side.
+    The served 1.88 engine ships `Redbox.KioskServices.Proxy` 1.81.0.27, which sends only the non-merchant subset
+    (its merchant and inventory calls moved to the Kiosk Client Service); it was exercised through `ExecuteMessage`
+    only.
+- **2014-2016 broker client** (`run-broker-harness-2016.ps1`, `Redbox.DVD.BrokerServices.dll` 1.7.0.9, GenuineChannels
+  ILMerged in): registered with the Mono broker, answered Ping, received a dashboard Reserve3 (the newer
+  ReservationCart3's extra fields were tolerated) and answered it, re-registered within ~5 s of `wslc restart
+  rb-remoting` and took the next Reserve3. Cancel is refused by the dashboard with a 409 (the 1.7 interface has no
+  CancelReservation). The 2016 harnesses run as an x86 exe built into the engine's `bin\`: the binary formatter
+  binds `KioskShared` from the application base, as it does in `kioskengine.exe`.
+- **Full kiosk engine with the legacy broker: not reached.** The real 1.88 `kioskengine.exe` (a scratch copy of
+  the served kop-v2-engine with the image's `data` folder, hosts rewritten to localhost) starts, loads its
+  kernel extensions (BrokerServices, HardwareServices, UpdateServices) and its five data config files, finds no
+  Kiosk Client Service on :9001 and falls back to static configuration, then exits in `EngineApplication.Initialize`:
+  `SchedulerService.SaveEntries` writes `HKLM\SOFTWARE\Redbox\REDS\Kiosk Engine\Core` (access denied without
+  administrator rights). The rental bundle, which calls `RegisterWithBrokerService`, never loads. Also needed on an
+  elevated run: `BrokerServicesURL`/`KioskServicesURL` under `...\Kiosk Engine\Remote Services\...` (or hosts
+  entries for blt/bl2.accessredbox.net), the Store `ID`, a HAL service (or the HAL simulator) and the Device Service
+  (the simulator registry values are already set on this PC), and the Kiosk Client Service. So a dashboard
+  Reserve3 has reached the real 1.88 and 2016 broker proxies, but not the real rental code
+  (`ReservationFunctions.CreateReservationCallback`).
 - **Not verified**: the real Update Client and Device Service against the backend (both need the CA trusted
   and/or a kiosk id under `WOW6432Node`, i.e. administrator rights; `tests/clients/run-ucs.ps1` is ready for an
   elevated run), and a whole physical kiosk.

@@ -509,8 +509,9 @@ masked.
   PreAuth's rule values.
 - Group names in 2014-2016 `Contents`; only "purchase" is special-cased.
 - **Offer `ExpirationDate`.** The client reads it with a raw `(DateTime)` cast. JavaScriptSerializer only
-  produces a DateTime there from the escaped `"\/Date(ms)\/"` string, and the transport's `json.dumps` cannot
-  write that escape. So the key is left out, and the client defaults it to today.
+  produces a DateTime there from the escaped `"\/Date(ms)\/"` string, so the handler writes `"/Date(ms)/"`
+  (`ms_date`) and both transports serialize with `kioskservices.dumps`, which adds the escapes. Checked with the
+  real 1.80 client: an offer expiring 2026-11-06T17:30Z is parsed as that UTC date.
   `ExcludeIfWithinRedboxReleaseDate` is sent as a TimeSpan object when the offer data gives it in days.
 - The FraudService and ReservationServices hooks that read the replies of queued Return and validation
   messages are not decompiled (missing assemblies). Those replies carry only `Success`.
@@ -521,3 +522,8 @@ masked.
 them: Redbox.Core dates, numeric enums, 2014-2016 `Contents` and 2024 `ShoppingCart` carts, the 2024 Return
 wrapper and TripleDES secrets. It checks the replies and the state left in the tables. Run it with
 `rb.ps1 test tests/test_kioskservices.py`.
+
+The real clients run every type too (see the README's verification section):
+`tests/clients/run-kioskservices-cases.ps1` (1.80 proxy, 25 types) and `run-kioskservices-cases-2016.ps1`
+(2014-2016 `Redbox.DVD.KioskServices.dll`, 25 types), over Remoting and REST. The 2016 run showed that
+`UnplayableReturn` must answer `IsUnplayable` (read into the engine's `is_unplayable`).
