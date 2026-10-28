@@ -272,7 +272,7 @@ namespace Redbox.SelfHosted.Remoting
             return e;
         }
 
-        static readonly int CallTimeout = Program.EnvInt("BROKER_CALL_TIMEOUT", 30), PingTimeout = Program.EnvInt("BROKER_PING_TIMEOUT", 10);
+        static readonly int CallTimeout = Program.EnvInt("BROKER_CALL_TIMEOUT", 90), PingTimeout = Program.EnvInt("BROKER_PING_TIMEOUT", 10);
 
         /// <summary>A call into the kiosk, bounded: GenuineChannels would otherwise wait InvocationTimeout (120 s) on a
         /// connection that died without being noticed. A kiosk that does not answer in time is flagged (NoAnswerUtc).</summary>
