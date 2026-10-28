@@ -3,7 +3,7 @@
   Run the real Update Manager client code against the self-hosted Update Service.
 .PARAMETER BinDir
   A folder with the decompiled Update Manager assemblies (the update-console build output, e.g.
-  src\UpdateManager\update-console\bin\Release\net46) plus lua51.dll and xdelta3.exe from a kiosk image.
+  software\src\UpdateManager\update-console\bin\Release\net46) plus lua51.dll and xdelta3.exe from a kiosk image.
 .PARAMETER Root
   Scratch folder that plays "REDS\Update Manager" (gets .store\.repository and .store\.data).
 .EXAMPLE

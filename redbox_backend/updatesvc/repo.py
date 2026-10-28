@@ -1,6 +1,6 @@
 """Repositories of the legacy Update Service: import, publishing, change sets and snapshots.
 
-Data model (docs/systems/update-manager.md §5.2, §5.4, §7): a repository is a linear list of revisions;
+Data model (software/docs/systems/update-manager.md §5.2, §5.4, §7): a repository is a linear list of revisions;
 each revision lists changed files (`TargetPath`, `TargetName`, `VersionHash` = SHA-1 of the file after the
 revision). Content is a seed (the whole file) or a VCDIFF delta against the previous version, or nothing
 (`Composite` placeholder). On the kiosk every content file is named

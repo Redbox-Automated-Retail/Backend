@@ -14,7 +14,7 @@ table CONTRACTS below, which mirrors the client's `[DataMember]` attributes. Req
 
 State lives in the `ticket_*` tables (schema/52_tickets.sql): inventory per ticket group, seat locks with expiry,
 orders, card-hash -> e-mail, notification sign-ups. Card authorisation follows `config.PAYMENT_MODE` like the
-Transaction API (see backend/docs/cloud-apis.md, "Ticket Services").
+Transaction API (see docs/cloud-apis.md, "Ticket Services").
 """
 import contextlib
 import datetime as _dt

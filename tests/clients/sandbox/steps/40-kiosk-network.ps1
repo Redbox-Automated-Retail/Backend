@@ -1,4 +1,4 @@
-# Point the sandboxed kiosk at the backend as a real kiosk is pointed (backend\README.md, "Pointing a kiosk at the
+# Point the sandboxed kiosk at the backend as a real kiosk is pointed (README.md, "Pointing a kiosk at the
 # backend"): hosts entries for Redbox's host names -> this PC (through relay.py on the Default Switch address), the
 # backend's CA trusted, and the Kiosk Engine machine settings (engine-registry.ps1, from a real kiosk's export).
 param([string] $HostIp = ((Get-NetRoute -DestinationPrefix 0.0.0.0/0 | Sort-Object RouteMetric | Select-Object -First 1).NextHop),

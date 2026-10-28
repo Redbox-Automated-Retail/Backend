@@ -1,6 +1,6 @@
 """Client-side secrets of the Update Client that the IoT certificate service must reproduce.
 
-* HashService (src/UpdateClient/.../IoT/Certificate/Security/HashService.cs):
+* HashService (software/src/UpdateClient/.../IoT/Certificate/Security/HashService.cs):
     password(id) = Base64(SHA512(UTF8(Base64(SHA512(UTF8(id))) + salt)))
   The salt helpers are async methods called without `await`, so the salt is the ToString() of a Task<string>:
   "System.Threading.Tasks.Task`1[System.String]" for both the kiosk password and the PFX password.

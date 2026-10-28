@@ -5,7 +5,7 @@ import secrets
 from .. import db
 from .common import ci, to_int
 
-# Perks points (invented, see backend/docs/cloud-apis.md): earned per vended item, cost of a free 1-night item.
+# Perks points (invented, see docs/cloud-apis.md): earned per vended item, cost of a free 1-night item.
 ACCRUAL_POINTS = 100
 REDEMPTION_POINTS = {"dvd": 1500, "bluray": 1800, "4k": 2100, "game": 2700}
 TIERS = [(20, "Superstar"), (10, "Star"), (0, "Member")]  # rentals this calendar year -> tier

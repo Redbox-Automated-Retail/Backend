@@ -7,7 +7,7 @@
   kiosk has, with every host pointed at this backend; no RebootTime, so nothing asks the PC to restart) and records
   every key and value it adds or changes in -Manifest (with the previous value). -Clean undoes exactly that.
   Writing there needs either an elevated shell or write access to HKLM\SOFTWARE\WOW6432Node\Redbox, e.g. granted
-  once from an elevated PowerShell (see backend\README.md, "Running the real Kiosk Engine").
+  once from an elevated PowerShell (see README.md, "Running the real Kiosk Engine").
 .EXAMPLE
   .\engine-registry.ps1 -Apply -KioskId <store ID>
   .\engine-registry.ps1 -Clean

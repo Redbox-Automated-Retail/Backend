@@ -1,4 +1,4 @@
-"""IoT certificate service (AppSettings:IoTCertificateServiceUrl), docs/systems/update-client.md §5.2.
+"""IoT certificate service (AppSettings:IoTCertificateServiceUrl), software/docs/systems/update-client.md §5.2.
 
 POST api/thing-types/get-certificates   {type: E("kiosks"), name: E(kioskId), thingGroupName}  -> current or new cert
 POST api/thing-types/certificates       same body                                            -> always a new cert

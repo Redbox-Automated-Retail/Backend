@@ -7,7 +7,7 @@
   AllowUntrustedCertificates=false and the certificate service is HTTPS) and (b) a kiosk id is set in
   HKLM\SOFTWARE\Redbox\REDS\Kiosk Engine\Store (WOW6432Node for the 32-bit .NET Core 2.2 runtime).
   Both need administrator rights, so this script:
-    1. imports backend\certs\ca.cer into LocalMachine\Root (run `rb.ps1 export-ca` first);
+    1. imports certs\ca.cer into LocalMachine\Root (run `rb.ps1 export-ca` first);
     2. sets ID / Market under HKLM\SOFTWARE\WOW6432Node\Redbox\REDS\Kiosk Engine\Store if they are missing;
     3. copies the UCS build to a temp folder with an appsettings.Production.json that points at localhost;
     4. runs it in console mode for -Seconds and then prints what it did (log lines, configuration.json,
@@ -16,7 +16,7 @@
   like a kiosk does (an existing configuration.json is backed up and restored). Use -Cleanup to remove the
   CA and the registry values it added afterwards.
 .EXAMPLE
-  .\run-ucs.ps1 -UcsBin ..\..\..\src\UpdateClient\UpdateClientService.API\bin\Release\netcoreapp2.2 -KioskId 990002
+  .\run-ucs.ps1 -UcsBin ..\..\software\src\UpdateClient\UpdateClientService.API\bin\Release\netcoreapp2.2 -KioskId 990002
 #>
 param(
     [Parameter(Mandatory)] [string] $UcsBin,

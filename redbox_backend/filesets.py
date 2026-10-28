@@ -1,6 +1,6 @@
 """File-set revisions, their S3 objects and per-kiosk change sets.
 
-Formats come from docs/systems/update-client.md §5.4, §7.5 and update-manager.md §5.11:
+Formats come from software/docs/systems/update-client.md §5.4, §7.5 and update-manager.md §5.11:
   * a revision zip holds `revision` (the ClientFileSetRevision manifest) and `revision.json` (info with a
     `RevisionId` key); file zips hold `<fileId>-<fileRev>` and `<fileId>-<fileRev>.json`
     (`{FileId, FileRevisionId, ...}`); a set zip holds every file pair. Data entries must not end in

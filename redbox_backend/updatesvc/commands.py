@@ -1,6 +1,6 @@
-"""Update Service commands used by the kiosk (docs/systems/update-manager.md §6.3-§6.6).
+"""Update Service commands used by the kiosk (software/docs/systems/update-manager.md §6.3-§6.6).
 
-Wire client: src/UpdateManager/Redbox.UpdateService.Client/UpdateService.cs.
+Wire client: software/src/UpdateManager/Redbox.UpdateService.Client/UpdateService.cs.
   u p  n:'<store>' c:'{repo: head}' h:'<hash>'           -> line 0 = [ChangeSet], line 1 = Store (if any)
   u pr n:'<store>' v:'2' c:'[PollRequestDTO]' h:'<hash>' -> one PollReplyDTO per line
   installer start hash:'..' version:'..' h:'..'          -> JSON object of strings
@@ -22,7 +22,7 @@ from .rcp import CommandError
 
 log = logging.getLogger("updatesvc")
 
-# PollRequestType / PollReplyType (src/UpdateManager/Redbox.UpdateService.Model)
+# PollRequestType / PollReplyType (software/src/UpdateManager/Redbox.UpdateService.Model)
 REQ_CONFIGFILES, REQ_STOREINFO, REQ_WORKRESULT, REQ_STATUS, REQ_TRANSFERSTAT, REQ_STOREFILES, REQ_FILESETS = 2, 3, 4, 5, 6, 8, 9
 REP_UPDATECONFIG, REP_CONFIGCHANGESET, REP_STOREINFOCHANGESET, REP_UPDATESTOREINFO = 3, 4, 5, 6
 REP_DOWNLOADFILE, REP_STOREFILECHANGESET, REP_FILESETCHANGESET = 8, 10, 11

@@ -1,8 +1,9 @@
 # Redbox self-hosted backend
 
 A replacement for every remote server the Redbox kiosk software talks to, so a kiosk can run without
-Redbox's (long gone) cloud. Server behaviour is inferred from the decompiled clients in `../src` and the
-protocol documents in `../docs/systems`; nothing here comes from Redbox server code.
+Redbox's (long gone) cloud. Server behaviour is inferred from the decompiled clients in the Software repository
+and its protocol documents in `docs/systems` (both in the `software/` submodule, see below); nothing here comes
+from Redbox server code.
 
 It runs as containers under **WSLC** (`C:\Program Files\WSL\wslc.exe`), driven by `scripts/rb.ps1`.
 
@@ -65,20 +66,42 @@ One Python 3.12 image (`Dockerfile`) holds all services; the code is in `redbox_
 | `admin/cli.py` | Operator CLI (`rb.ps1 admin ...`) |
 | `dashboard/` | Admin dashboard: `server.py` (login, JSON API), `auth.py`, `static/` (single-page UI, no build step) |
 | `schema/*.sql` | Idempotent schema, applied at start-up by every service |
-| `../remoting/` | The Mono host (`src/RemotingHost.cs`), its build (`build.sh`: the kiosk's own `KioskShared` and `KioskServices.ComponentModel` sources compiled so type and assembly names match, plus the GenuineChannels patch in `tools/`) |
+| `remoting/` | The Mono host (`src/RemotingHost.cs`), its build (`build.sh`: the kiosk's own `KioskShared` and `KioskServices.ComponentModel` sources compiled so type and assembly names match, plus the GenuineChannels patch in `tools/`) |
+
+## The Software submodule
+
+The decompiled kiosk software lives in its own repository, Redbox-Automated-Retail/Software, checked out here as
+the git submodule `software/` (pinned to a commit; `git submodule update --remote software` moves it forward).
+The backend uses it for:
+
+- the `rb-remoting` image, which compiles the kiosk's `KioskShared` and `KioskServices.ComponentModel` sources
+  and patches its `lib/GenuineChannels/GenuineChannels.dll` (`remoting/Dockerfile`);
+- the Update Client's passphrase, read from `software/src/UpdateClient/.../EncryptionService.cs` at run time
+  (`rb.ps1 up`, see Secrets);
+- the real-client harnesses in `tests/clients/`, which load build outputs of projects under `software/src`;
+- the protocol documents in `software/docs/systems`, which the docs and code comments here cite.
+
+Paths written as `software/...` in this repository are in the submodule. Clone with it:
+
+```powershell
+git clone --recurse-submodules git@github.com:Redbox-Automated-Retail/Backend.git
+# or, in an existing clone:
+git submodule update --init
+```
 
 ## Running it
 
-Prerequisites: WSLC 3.0+ (`wslc version`), network access for the first image build.
+Prerequisites: WSLC 3.0+ (`wslc version`), network access for the first image build, and the `software/`
+submodule checked out.
 
 ```powershell
-cd backend
+cd Backend
 copy example.env local\backend.env      # optional; edit host names, bind address, payment mode
 .\scripts\rb.ps1 build                  # build redbox-backend:latest and redbox-remoting:latest
 .\scripts\rb.ps1 up                     # network + volumes + certificates + 6 containers
 .\scripts\rb.ps1 status
 .\scripts\rb.ps1 import-store "D:\image\REDS\Update Manager\.store"   # optional: serve a kiosk's update history
-.\scripts\rb.ps1 export-ca              # backend\certs\ca.cer for the kiosk
+.\scripts\rb.ps1 export-ca              # certs\ca.cer for the kiosk
 .\scripts\rb.ps1 logs iot               # db | updatesvc | cloudapi | iot | admin | remoting
 .\scripts\rb.ps1 admin events --limit 20
 .\scripts\rb.ps1 test                   # protocol tests against the running stack
@@ -126,7 +149,7 @@ configuration put back to the shipped Redbox values (the image's `.staged_` copi
    (`files.kiosk.prod.redbox.com` is invented by this backend for presigned S3 URLs.) To use your own names
    instead, put them in `EXTRA_HOSTNAMES` (certificate) and in the settings below, then `rb.ps1 up` again.
 
-2. **Trust the CA**: `rb.ps1 export-ca`, copy `backend\certs\ca.cer` to the kiosk and run
+2. **Trust the CA**: `rb.ps1 export-ca`, copy `certs\ca.cer` to the kiosk and run
    `certutil -addstore Root ca.cer` (elevated). Every TLS client on the kiosk validates normally:
    `srcp://` (Redbox.IPC.Framework, unless `HKLM\SOFTWARE\Redbox\ValidateCallback = false`), MQTTnet
    (`AllowUntrustedCertificates = false`, no pinning) and the .NET Core `HttpClient`s. No certificate
@@ -196,7 +219,7 @@ or use the dashboard's **Update packages** page (import with progress) and the r
 
 Two kiosk services were .NET Remoting, so they run on **Mono 6.12 with the real `System.Runtime.Remoting` and the
 kiosk's own GenuineChannels.dll** (no home-made encoder). The DTO and interface assemblies are compiled in the
-image from the decompiled sources (`Redbox.Services.KioskBrokerServices.KioskShared`,
+image from the decompiled sources in the submodule (`Redbox.Services.KioskBrokerServices.KioskShared`,
 `Redbox.KioskServices.ComponentModel`), so the type and assembly names the binary formatter writes match what the
 kiosk sends. The container keeps no state: it reports to `rb-cloudapi`'s internal API (`/_internal/...`,
 authenticated with `X-Internal-Token` from `rb-certs/internal.key`), which writes the database.

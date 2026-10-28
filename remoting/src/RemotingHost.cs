@@ -2,9 +2,9 @@
 //
 //  * Reservation broker   gtcp://<host>:7890/RegistrationBroker/Default.rem  (GenuineChannels TCP, binary formatter)
 //      The kiosk calls IKioskRegister.Register(kioskId, itself, versionJson) and keeps the connection; the broker
-//      later calls back IKioskOperations.Reserve3 / CancelReservation / Ping on it (docs/systems/kiosk-engine.md 6.4).
+//      later calls back IKioskOperations.Reserve3 / CancelReservation / Ping on it (software/docs/systems/kiosk-engine.md 6.4).
 //  * Kiosk Services       http://<host>:8090/KioskServices/MessageService.rem  (HttpChannel, binary formatter)
-//      IMessageService.Process(json) -> json (docs/systems/kiosk-engine.md 6.6). rb-cloudapi terminates TLS for
+//      IMessageService.Process(json) -> json (software/docs/systems/kiosk-engine.md 6.6). rb-cloudapi terminates TLS for
 //      https://bl2.accessredbox.net/... and forwards binary requests here; it answers the REST mode itself.
 //
 // The host keeps no state of its own: registrations are reported to, and messages answered by, the Python

@@ -16,10 +16,10 @@
     rb.ps1 admin-in <dir> <args> same, in a one-off container with <dir> mounted at /in
     rb.ps1 import-store <path>   import a kiosk's "REDS\Update Manager\.store", a data-<date>.zip seed or a folder of seeds
     rb.ps1 import-packages [dir] import every data-*.zip seed in PACKAGES_DIR (or dir), read-only
-    rb.ps1 export-ca             copy ca.crt / ca.cer to backend\certs\ for installing on kiosks
+    rb.ps1 export-ca             copy ca.crt / ca.cer to certs\ for installing on kiosks
     rb.ps1 test                  run the protocol tests inside a container against the running stack
 
-  Settings come from backend\local\backend.env (copy example.env). Host ports: 443 (cloud APIs, IoT
+  Settings come from local\backend.env (copy example.env). Host ports: 443 (cloud APIs, IoT
   certificate service, S3; plain HTTP on 80 for the 2014 Ticket Services), 7002 (srcp Update Service), 7080 (change-set downloads), 8883 (MQTT/TLS);
   8081 (IoT operator API) and 8443 (admin dashboard) are published on 127.0.0.1 only by default.
 #>
@@ -31,13 +31,13 @@ param(
 $ErrorActionPreference = "Stop"
 $Wslc = "C:\Program Files\WSL\wslc.exe"
 $Backend = Split-Path -Parent $PSScriptRoot
-$Repo = Split-Path -Parent $Backend
+$Software = Join-Path $Backend "software"   # the Software repository (git submodule)
 $Image = "redbox-backend:latest"
 $RemotingImage = "redbox-remoting:latest"
 $Network = "redbox"
 $Volumes = @{ pg = "rb-pgdata"; data = "rb-data"; certs = "rb-certs" }
 $EnvFile = Join-Path $Backend "local\backend.env"
-$UcsEncryptionSource = Join-Path $Repo "src\UpdateClient\UpdateClientService.API\Services\IoT\Certificate\Security\EncryptionService.cs"
+$UcsEncryptionSource = Join-Path $Software "src\UpdateClient\UpdateClientService.API\Services\IoT\Certificate\Security\EncryptionService.cs"
 
 function W { & $Wslc @args; if ($LASTEXITCODE -ne 0) { throw "wslc $($args -join ' ') failed ($LASTEXITCODE)" } }
 # Run wslc ignoring failures (PowerShell 5.1 turns native stderr into errors under "Stop").
@@ -80,9 +80,9 @@ function Start-Service($name, $alias, $ports, $cmd, $extraVolumes = @(), $extraE
 switch ($Command) {
     "build" {
         W build -t $Image $Backend
-        # Mono host for the legacy .NET Remoting backends; its context is the repository root because it
-        # compiles the kiosk's contract assemblies from src/ (only the files in Dockerfile.dockerignore are sent).
-        W build -t $RemotingImage -f (Join-Path $Backend "remoting\Dockerfile") $Repo
+        # Mono host for the legacy .NET Remoting backends; it compiles the kiosk's contract assemblies from
+        # software/src (only the files in remoting\Dockerfile.dockerignore are sent).
+        W build -t $RemotingImage -f (Join-Path $Backend "remoting\Dockerfile") $Backend
     }
     "up" {
         if (-not (WQuiet network inspect $Network)) { W network create $Network | Out-Null }

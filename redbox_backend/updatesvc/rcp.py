@@ -1,6 +1,6 @@
 """Server side of Redbox's line protocol (Redbox.IPC.Framework, `rcp://` plain / `srcp://` TLS).
 
-Framing, from src/Common/Redbox.IPC.Framework (ClientSession.cs, ClientCommand.cs, ServerSession.cs):
+Framing, from software/src/Common/Redbox.IPC.Framework (ClientSession.cs, ClientCommand.cs, ServerSession.cs):
   * ASCII, CRLF-terminated lines. On connect the server writes `Welcome! <name>, Version <v>, <copyright>`.
   * The client writes one command line; the server answers with zero or more message lines and then a
     status line `203 Command Success. (Execution Time:<ms>)` or `545 Command failed. ...`.

@@ -1,7 +1,7 @@
 """Settings shared by every service, read from environment variables.
 
 Host names default to the original Redbox names so that a kiosk only needs hosts-file entries and the
-local CA; set the variables to use your own names instead (see backend/README.md).
+local CA; set the variables to use your own names instead (see README.md).
 """
 import os
 

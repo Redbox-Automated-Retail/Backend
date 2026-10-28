@@ -19,7 +19,7 @@ System.NullReferenceException: Object reference not set to an instance of an obj
 It also happens on a kiosk with a real Device Service: the simulator flag alone selects
 `DeviceServiceClientHelperSimulator`.
 
-**Cause** (`src/KioskEngine/Redbox.KioskEngine.Environment/DeviceServiceClientHelperSimulator.cs`):
+**Cause** (`software/src/KioskEngine/Redbox.KioskEngine.Environment/DeviceServiceClientHelperSimulator.cs`):
 
 - `ReadConfigFile()` (constructor) loads `_model` from `<DataPath>\KioskEngineSimulatedCardReaderData.json` only if
   the file exists; otherwise `_model` stays `null`.

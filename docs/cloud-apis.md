@@ -5,9 +5,9 @@ kiosk software calls besides the update service, MQTT and the IoT certificate se
 through different base URLs (Proxy Service, Transaction API, Inventory API, Kiosk Data Service, Ad Server, Product
 Reels, Bluefin); their paths do not collide, so all base URLs can point at the same host.
 
-Server behaviour is inferred from the decompiled clients (`src/KioskClient/KioskClientService.API`, Device Service,
-Kiosk Engine, Update Client) and the protocol docs in `docs/systems/`. Everything is stored in PostgreSQL (tables
-`cloud_*`, `backend/redbox_backend/schema/50_cloud.sql`; defaults seeded once by `51_cloud_seed.sql`).
+Server behaviour is inferred from the decompiled clients (`software/src/KioskClient/KioskClientService.API`, Device Service,
+Kiosk Engine, Update Client) and the protocol docs in `software/docs/systems/`. Everything is stored in PostgreSQL (tables
+`cloud_*`, `redbox_backend/schema/50_cloud.sql`; defaults seeded once by `51_cloud_seed.sql`).
 
 Code: `cloudapi/routers/{transaction,inventory,proxy,kioskdata,ads,reels,bluefin,fraud,tickets}.py` (tickets: the 2014
 SOAP Ticket Services, §7), helpers
@@ -18,7 +18,7 @@ SOAP Ticket Services, §7), helpers
 `<base>` is this server, e.g. `https://cloud.example.test` (placeholder).
 
 **`%ProgramData%\Redbox\Configuration\configuration.json`** (written by the Update Client from the configuration
-service; read by KCS, `docs/systems/kiosk-client.md` §5.2, §8.2):
+service; read by KCS, `software/docs/systems/kiosk-client.md` §5.2, §8.2):
 
 | Category | Setting | Value |
 |---|---|---|
@@ -52,7 +52,7 @@ Update Client's ping-failure report uses `ProxyApiUrl` or this value too).
 | `Fraud` | `FraudServicesUrl`, `AwsFraudServicesUrl` | not used by any code (§3.8) |
 
 **Device Service `Data\KioskData.json`**: `{"KioskId": <id>, "ApiKey": "<any>", "ApiUrl": "<base>"}` (read once at
-start-up, `docs/systems/device-service.md` §6.3).
+start-up, `software/docs/systems/device-service.md` §6.3).
 
 KCS takes the kiosk id from `HKLM\SOFTWARE\Redbox\REDS\Kiosk Engine\Store\ID`. KCS runs on the x86 runtime, so
 on 64-bit Windows it reads the 32-bit view (`HKLM\SOFTWARE\WOW6432Node\...`). With no id there, KCS refuses to
@@ -409,14 +409,14 @@ Before the Kiosk Client Service, the engine talked to one "Kiosk Services" endpo
 `https://bl2.accessredbox.net/KioskServices/MessageService.rem` (machine setting
 `Remote Services\Store Services\KioskServicesURL`). Every call is `IMessageService.Process(string json) -> string
 json`. The transport (`routers/remoting.py`, with the Mono host `rb-remoting` for .NET Remoting) is described in
-`docs/systems/kiosk-engine.md` §6.6. The messages are handled by `cloudapi/kioskservices.py`.
+`software/docs/systems/kiosk-engine.md` §6.6. The messages are handled by `cloudapi/kioskservices.py`.
 
 Decompiled clients:
 
 | Build | Used by | Messages |
 |---|---|---|
 | `Redbox.DVD.KioskServices.dll` (2016-10-28 seed) | 2014-2016 engines | "2016" column below |
-| `Redbox.KioskServices.Proxy` 1.81.0.27 (`src/KioskServices`) | engine 1.81 | "1.81" column |
+| `Redbox.KioskServices.Proxy` 1.81.0.27 (`software/src/KioskServices`) | engine 1.81 | "1.81" column |
 | `Redbox.KioskServices.Proxy` (2024-07-23 seed) | later 1.8x engines. Each call has a `Send*ToKioskClientService` switch; Kiosk Services is used when the switch is off | "2024" column |
 
 Queued messages (q) are written to the engine's message queue. The `KioskServices` (default) or `SoftSync` queue

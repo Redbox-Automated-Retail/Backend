@@ -1,6 +1,6 @@
 """IoT service: MQTT broker + the "IoT rules / Update Service instances" behind it + an operator API.
 
-Kiosk -> cloud (docs/systems/update-client.md §5.3):
+Kiosk -> cloud (software/docs/systems/update-client.md §5.3):
   $aws/rules/kioskucsregister   UCSRegisterMessage                       (recorded)
   $aws/rules/kioskping          KioskPing request                        (recorded, no reply)
   $aws/rules/kioskrestcall      IoTCommandModel requests                 -> Response on redbox/kiosk/{id}/command

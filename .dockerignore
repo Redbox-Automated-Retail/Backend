@@ -1,0 +1,13 @@
+# Build context of both images. WSLC applies this file to remoting/Dockerfile too, so the Software paths that image
+# copies stay in; everything else in the submodule is left out (see also remoting/Dockerfile.dockerignore).
+.git
+local/
+certs/
+out/
+**/__pycache__
+software/*
+!software/src/KioskEngine/Redbox.Services.KioskBrokerServices.KioskShared/**
+!software/src/KioskServices/Redbox.KioskServices.ComponentModel/**
+!software/lib/GenuineChannels/GenuineChannels.dll
+software/**/bin
+software/**/obj

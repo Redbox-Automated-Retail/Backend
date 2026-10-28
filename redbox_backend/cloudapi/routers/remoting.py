@@ -1,4 +1,4 @@
-"""Legacy .NET Remoting backends, together with the Mono host in rb-remoting (backend/remoting).
+"""Legacy .NET Remoting backends, together with the Mono host in rb-remoting (remoting/).
 
 Public, on the kiosk-facing host:
   POST /KioskServices/MessageService.rem

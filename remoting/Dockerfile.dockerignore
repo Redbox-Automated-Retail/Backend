@@ -1,9 +1,9 @@
 *
-!src/KioskEngine/Redbox.Services.KioskBrokerServices.KioskShared/**
-!src/KioskServices/Redbox.KioskServices.ComponentModel/**
-!lib/GenuineChannels/GenuineChannels.dll
-!backend/remoting/src/**
-!backend/remoting/build.sh
+!software/src/KioskEngine/Redbox.Services.KioskBrokerServices.KioskShared/**
+!software/src/KioskServices/Redbox.KioskServices.ComponentModel/**
+!software/lib/GenuineChannels/GenuineChannels.dll
+!remoting/src/**
+!remoting/build.sh
 **/bin
 **/obj
-!backend/remoting/tools/**
+!remoting/tools/**

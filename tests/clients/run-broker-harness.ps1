@@ -2,7 +2,7 @@
 .SYNOPSIS
   Run the real decompiled reservation-broker client (Redbox.BrokerServices.Proxy + GenuineChannels) against rb-remoting.
 .PARAMETER BinDir
-  Build output of src\KioskServices\Redbox.BrokerServices.Proxy (bin\Release\net472): the proxy and its references.
+  Build output of software\src\KioskServices\Redbox.BrokerServices.Proxy (bin\Release\net472): the proxy and its references.
 .EXAMPLE
   & C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe -File run-broker-harness.ps1 -BinDir ...\net472 -KioskId 990010 -Seconds 240
 #>

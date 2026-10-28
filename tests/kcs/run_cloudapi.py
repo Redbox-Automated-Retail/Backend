@@ -1,7 +1,7 @@
 """Run the cloud API on plain HTTP for local tests, also on Windows.
 
 psycopg's async mode cannot use Windows' default ProactorEventLoop, so this runs uvicorn on a
-SelectorEventLoop. Usage (cwd = backend/):  python tests/kcs/run_cloudapi.py [port]
+SelectorEventLoop. Usage (cwd = repository root):  python tests/kcs/run_cloudapi.py [port]
 """
 import asyncio
 import logging

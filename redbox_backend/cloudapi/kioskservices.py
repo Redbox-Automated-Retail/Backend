@@ -3,7 +3,7 @@
 The transport (.NET Remoting through rb-remoting, or the REST form post) is in routers/remoting.py; it calls
 `process(message)` with the request as a dict and sends back the dict returned here as JSON.
 
-Message set (see backend/docs/cloud-apis.md, "Kiosk Services MessageService"): every MessageType that the
+Message set (see docs/cloud-apis.md, "Kiosk Services MessageService"): every MessageType that the
 2014-2016 `Redbox.DVD.KioskServices.dll`, the 1.81 `Redbox.KioskServices.Proxy` and its 2024 build send,
 directly or through the engine's message queue (`KioskServices` / `SoftSync` queue processors, which forward the
 queued JSON unchanged). Most messages carry the same objects as their Kiosk Client Service successors, so each
