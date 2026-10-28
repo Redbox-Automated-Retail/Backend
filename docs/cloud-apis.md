@@ -402,3 +402,122 @@ must exist in `ticket_productions` / `ticket_price_codes`.
   server stores them swapped back.
 - GeneralError is only produced for unexpected server errors. The real client was run against ValidationError
   only; the GeneralError detail shape is tested in pytest.
+
+## 8. Kiosk Services MessageService (engines 1.81 and older)
+
+Before the Kiosk Client Service, the engine talked to one "Kiosk Services" endpoint,
+`https://bl2.accessredbox.net/KioskServices/MessageService.rem` (machine setting
+`Remote Services\Store Services\KioskServicesURL`). Every call is `IMessageService.Process(string json) -> string
+json`. The transport (`routers/remoting.py`, with the Mono host `rb-remoting` for .NET Remoting) is described in
+`docs/systems/kiosk-engine.md` §6.6. The messages are handled by `cloudapi/kioskservices.py`.
+
+Decompiled clients:
+
+| Build | Used by | Messages |
+|---|---|---|
+| `Redbox.DVD.KioskServices.dll` (2016-10-28 seed) | 2014-2016 engines | "2016" column below |
+| `Redbox.KioskServices.Proxy` 1.81.0.27 (`src/KioskServices`) | engine 1.81 | "1.81" column |
+| `Redbox.KioskServices.Proxy` (2024-07-23 seed) | later 1.8x engines. Each call has a `Send*ToKioskClientService` switch; Kiosk Services is used when the switch is off | "2024" column |
+
+Queued messages (q) are written to the engine's message queue. The `KioskServices` (default) or `SoftSync` queue
+processor sends them later: it forwards the queued JSON as is and deletes the entry whatever the result.
+
+### 8.1 Reply conventions
+
+The client parses the reply with Redbox.Core's JavaScriptSerializer into `Dictionary<string, object>`:
+
+- `Success` is a JSON boolean. On failure the client matches `Errors[0].Code` against its ResponseCode enums.
+  The codes used here are `(B004)` authentication failed, `(D001)`-`(D006)` promo codes, `(A002)`, `(A006)`,
+  `(A025)`, `(A026)` and the other `(Axxx)` authorisation codes, `(UPA001)` phone conflict, `(EA001)`/`(ER001)`
+  account not found, and `(U001)` for anything else (including an unknown MessageType).
+- Integers arrive as Int32 and are cast with `(int)`. Numbers with a fraction arrive as Decimal (`(decimal)`), so
+  money is always written with a fraction (`1.0`, never `1`).
+- Dates that the client converts with `ToObject<DateTime>` are Redbox.Core objects
+  `{"theDate": ticks, "dateTimeKind", "dateString"}`. `KioskPing.ServerTime` is one, in UTC; the kiosk sets its
+  clock when it is more than 5 minutes off. Request dates come in the same shape. The server reads the ticks,
+  because EmailConfirm writes `dateString` with a broken format. Local times are taken as UTC.
+- Every reply has `IsOnline: true`, `ServerBusy: false`, `ServerName` and `server_name` (the 2024 merchant calls
+  read the lower-case key). The 2014-2016 engines take `IsOnline` from every reply and drain their queue only
+  while it is true.
+- `Password` (Authenticate) and `Pin` (UpdateAccount) are `EncryptionHelper.Encrypt` values: TripleDES-CBC with
+  PKCS7. The key is `Guid("02CAD7C4-...").ToByteArray()` and the IV is the first 8 bytes of
+  `Guid("AD186FCD-...").ToByteArray()`. They are decrypted before use (`kioskservices.decrypt_secret`, checked
+  against .NET Framework).
+- For the state-changing types, a message whose MessageId was already processed gets the stored reply
+  (`cloud_processed_messages`, endpoint `ks:<MessageType>`). Queue retries therefore do not book twice.
+- A 2024 Return queue entry is `{ClientData, ReturnMessage}`. If there is no top-level `MessageType`, the inner
+  `ReturnMessage` is processed.
+
+### 8.2 Messages
+
+Most messages carry the same objects as their KCS successors (`CreditCard`, `ShoppingCart`,
+`CustomerProfileNumber`). The handler runs this backend's KCS-era endpoint on the message and reshapes the
+answer, so both kiosk generations share one behaviour and one set of tables. 2014-2016 carts are converted to a
+KCS `ShoppingCart` first. They come as `Contents` (group name → `Items` with `Prices`, plus `Totals`) and
+`DiscountCode`/`DiscountValue`. A group whose name contains "purchase" is a purchase group; every other group is
+a rental group.
+
+| MessageType | 2016 | 1.81 | 2024 | Behaviour (reply keys the client reads) |
+|---|---|---|---|---|
+| GetPendingStates | x | x | x | Installer data from `cloud_installer_kiosks`: `States[{Id, Description}]`. |
+| GetPendingBanners | x | x | x | `StateId` → `Banners[{Id, Name}]`. |
+| GetPendingKiosks | x | x | x | `StateId`, `BannerId` → `PendingKiosks[{Id, City, State, ZipCode, DueTime, Address, MarketName, KaseyaMarketName}]`. |
+| GetOpsMarket | x | x | x | `cloud_kiosk_locations.ops_market` or `kiosks.market` → `OpsMarket`, `KaseyaServer`. Unknown → `Success=false`. |
+| Authenticate | x | x | x | Field-staff login, as `api/kiosk/authenticate` (`cloud_staff_users`; an empty table accepts anyone). Failure → `(B004)`. The lock-out after failed attempts happens on the kiosk. |
+| DiscountCodeValidation | x | x | x | `cloud_promo_codes`, as the KCS promo validation: `Amount`, `PromotionIntentCode`, `ActionType`, `RentQty`/`GetQty`/... from the code's data. Errors `(D001)`/`(D002)`/`(D003)`/`(D006)`. |
+| EmailConfirm | x | x | x | Finds or creates the customer by e-mail → `ConfirmationStatus` (5 new, 1/3 known). 2016 sends `CardId`, which links that card to the customer; 1.81 and 2024 send `AccountNumber`. |
+| KioskOptIn (q) | x | x | x | Opt-ins are appended to `cloud_customers.opt_ins`, matched by e-mail or phone. The 2016 `CardHash` is linked to the customer of the opted-in e-mail. |
+| UpdateAccount (direct or q) | | x | x | Perks sign-up or update (`api/loyalty/updateaccount`): `CustomerProfileNumber`, `MobilePhoneNumber`, and `TempPassword` for new accounts. Phone used by another account → `(UPA001)`. |
+| EstimateAccrual / EstimateRedemption | | x | x | Cart → `Items[{ProductId, Points}]` (§3.3). Unknown CPN → `(EA001)` / `(ER001)`. |
+| GetCustomerOffers | | x | x | `cloud_customer_offers` for the card's customer → `StoredOffers`/`NewOffers`, `CustomerProfileNumber`, `AccountNumber`, `EmailAddress`. Offers have the shape `CustomerOfferProxy.ParseOffer` reads: `DiscountType` as an enum name, `IncludeFormats`/`ExcludeFormats` as strings, title ids as ints. |
+| GetCustomer | x | | | Digital (Redbox Instant): card `CardId` → `IsEligibleFreeTrial`, `Email`, `CustomerProfile{HasCustomerProfile, CPFirstName, CPLastName}`. |
+| RBiFreeTrialRequest | x | | | Finds or creates the customer by `Email` and links the card. Records `info.rbi_free_trial` unless `RequestStatus` is a decline. A second trial → `Success=false`. Reply: `IsEligibleFreeTrial`, `CanCreateProfile` (the e-mail was new), `CustomerProfile{CanCreateProfile}`. |
+| GetCustomerCredits | x | | | Free-rental credits (`cloud_customers.info.credits`, an int), one per rental item in the cart: `CreditSummary{TotalCreditsApplied, TotalCreditsAvailable}`, `CreditAllocations[{Barcode, Amount, NumberApplied}]`, `CustomerProfile{Valid, FirstName}`, `GiftCardSummary{MaxDiscs, MaxGames}`. |
+| PreAuth | | | x | Pre-authorisation rule. There are no rules here: `PromptRequired=false`, `SkipAuthRule=true`, `AuthAmount` = cart total, `AuthRuleId` and `AuthDays` 0. A blocked card or customer → `(A002)`. |
+| Authorize | x | | x | As `api/transaction/authorize` (`PAYMENT_MODE`, §3.1): `ReferenceNumber`, `Email`, `AccountNumber`, `CustomerProfileNumber`, `ConfirmationStatus`, `CustomerProfile{Valid, FirstName, IsRBI}`, `CreditSummary`, `Offers` (empty). With `UseCredits` `OptedIn` (2016), the allocated credits are deducted after approval. |
+| GCAuthorize | x | | x | Gift card, as `api/transaction/giftcardauthorize`, plus `GiftCardSummary{Exists, Status, Balance, MaxDiscs, MaxGames}`. |
+| ResvAuth | x | | x | As `api/transaction/reservationauthorize` (reservation `ReferenceNumber`). |
+| PickupAuthorize | | | x | As `api/transaction/pickupauthorize`. A cancelled or expired reservation → `(A026)`; an already picked-up one → `(A025)`. |
+| PickupValidation | x | | x | As `api/reservation/validatepickup`: `ReferenceNumbers` (the valid ones; the client takes the first), `ValidReservations`, `CancelledReservations` (Int32), `AllowRop`, `TransactionEntities`, `AccountNumber`, `CustomerProfileNumber`. |
+| Reconcile (q) | x | | x | As `api/transaction/reconcile`: books rentals and purchases, takes the discs out of the inventory, records promo redemptions, points and the gift-card balance. |
+| PickupReconcile (q) | | | x | As `api/transaction/reservationpickup`; also marks the reservation `picked_up`. |
+| ModResvPickup (q) | | | x | Reservation picked up with a changed cart. With `ModifiedCart`, `cloud_reservations.items` becomes the cart's items. PickupReconcile books the vend. |
+| Return (q) | x | | x | As `api/transaction/return`: closes the open rental (late nights computed), puts the disc back in its deck/slot, adds a `cloud_returns` row. |
+| SoftSync (q or immediate) | x | | x | Full disc snapshot, as `api/kiosk/sync`. `Status` 0/1 (InventoryItemStatus) is stored as `In`/`Removed`. `RemovedQueueItems` is ignored; the kiosk deletes them after a success. |
+| DiscFraud (2024: q) | x | | x | Logged (event `inventory/discfraud`). |
+| DiscAction | x | | x | FMA disc actions, logged (event `inventory/discaction`). |
+| RentalCount | x | | | `Count` = rentals vended at this kiosk today (UTC). |
+| UnplayableReturn | x | | | Adds a `cloud_returns` row with `return_type` 9 (UnplayableReturn) for the latest rental of the barcode. The customer (by `Email`, else the rental's customer) gets one free-rental credit. |
+| KioskPing | x | | | Health ping. `Versions` and `Statistics` are merged into `kiosks.info` like the KCS KioskVersion/KioskStatistics posts; engine/bundle version and the last ping time are recorded (event `health/ping`). Reply: `ServerTime`. |
+| KioskAlert (q) | x | | | Event `kioskdata/kioskalert` with the numeric alert type (`AlertTypes`: Qlm 1 … TitleEmpty 8). |
+| AuditEvent (q) | x | | | Event `kioskdata/auditevent`. |
+
+In 1.81 and the 2024 build, pings, alerts, audit events, kiosk events and function checks always go to the Kiosk
+Client Service / Kiosk Data Service, even when everything else uses Kiosk Services.
+
+The transport records every message as event `kioskservices/<MessageType>`, with card fields, password and PIN
+masked.
+
+### 8.3 Inferred
+
+- All server behaviour, as for the KCS-era APIs (§6).
+- **Credits.** The client does not show what a 2014-2016 "credit" was (Redbox Instant or unplayable-disc
+  credits). Here a credit is one free rental night, kept in `cloud_customers.info.credits`; edit it to give
+  credits. Authorize with `UseCredits=OptedIn` consumes them, and UnplayableReturn grants one.
+- The meaning of `RentalCount` (today's rentals at the kiosk), the `RequestStatus` values of RBiFreeTrialRequest
+  (anything but a decline word counts as acceptance), `CanCreateProfile` (the e-mail is not registered yet) and
+  PreAuth's rule values.
+- Group names in 2014-2016 `Contents`; only "purchase" is special-cased.
+- **Offer `ExpirationDate`.** The client reads it with a raw `(DateTime)` cast. JavaScriptSerializer only
+  produces a DateTime there from the escaped `"\/Date(ms)\/"` string, and the transport's `json.dumps` cannot
+  write that escape. So the key is left out, and the client defaults it to today.
+  `ExcludeIfWithinRedboxReleaseDate` is sent as a TimeSpan object when the offer data gives it in days.
+- The FraudService and ReservationServices hooks that read the replies of queued Return and validation
+  messages are not decompiled (missing assemblies). Those replies carry only `Success`.
+
+### 8.4 Tests
+
+`tests/test_kioskservices.py` sends every MessageType through the REST transport, built the way the proxies build
+them: Redbox.Core dates, numeric enums, 2014-2016 `Contents` and 2024 `ShoppingCart` carts, the 2024 Return
+wrapper and TripleDES secrets. It checks the replies and the state left in the tables. Run it with
+`rb.ps1 test tests/test_kioskservices.py`.
