@@ -1,0 +1,6 @@
+# Python packages for unredbox/HW-Emu-Python v2 inside the sandbox (terminal mode; pywin32 is only for its service
+# mode). Fetched by sandbox.ps1 prepare with: pip download --require-hashes --only-binary=:all: --platform win_amd64
+pyserial==3.5 --hash=sha256:c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0
+coloredlogs==15.0.1 --hash=sha256:612ee75c546f53e92e70049c9dbfcc18c935a2b9a53b66085ce9ef6a6e5c0934
+humanfriendly==10.0 --hash=sha256:1697e1a8a8f550fd43c2865cd84542fc175a61dcb779b6fee18cf6b6ccba1477
+pyreadline3==3.5.6 --hash=sha256:8449b734232e42a5dcd74048e39b60db2839a4c38cf3ae2bf7707d58b5389c0d

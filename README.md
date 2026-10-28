@@ -225,24 +225,48 @@ authenticated with `X-Internal-Token` from `rb-certs/internal.key`), which write
 
 ## Running a real kiosk in Windows Sandbox
 
-Windows Sandbox (Windows 11 Pro) gives an administrator Windows to run the kiosk stack in without touching this PC;
-it is discarded when closed. Everything mapped into it is a scratch copy. Scripts: `tests/clients/sandbox/`.
+Windows Sandbox (Windows 11 Pro, no extra setup when the feature is on) gives an administrator Windows that is
+discarded when closed, so a real kiosk stack runs in it without changing this PC. It works like a Dockerfile: every
+sandbox starts from a clean Windows and provisions itself from the same inputs, so `up` gives the same kiosk every
+time. `tests/clients/sandbox/sandbox.ps1`:
 
-1. Scratch copies (paths are the scripts' defaults): the Kiosk Engine and DeviceService from the served snapshot
-   (`admin export kop-v2-engine ...`, with a kiosk image's `data` folder) under `E:\temp\rb-engine2024`, a configured
-   `halservice` folder from a kiosk image, and in `E:\temp\rb-sandbox\tools` the Python embeddable package with
-   pyserial, coloredlogs and pywin32, com0com 2.2.2.0 (signed x64) and unredbox/HW-Emu-Python v2 (`hw-emu`).
-   `rb.ps1 export-ca`, then copy `certs\ca.cer` to the control folder.
-2. `python tests\clients\sandbox\relay.py`: the backend's ports are published on 127.0.0.1, so this relays them from
-   the Hyper-V Default Switch address (what the sandbox sees as this PC), not from the LAN.
-3. `tests\clients\sandbox\make-wsb.ps1 -Start` writes the `.wsb` and starts the sandbox; its logon script
-   (`loop.ps1`) runs whatever the host drops into the control folder. Then, in order, with
-   `run-sandbox-step.ps1 -Script steps\<n>.ps1`:
-   `10-com0com` (COM1<->COM10, COM3<->COM13; Windows asks once to install the driver), `20-hw-emu`,
-   `30-halsvc` (the real HAL as a service; allows the v4 runtime, see above), `40-kiosk-network` (hosts, CA, engine
-   registry values) and `50-engine`.
-   Put the kiosk data's store ID in the control folder's `store-id.txt` first.
-4. Send Reserve3 / Cancel from the dashboard's Reservation broker page to that store ID.
+```powershell
+.\scripts\rb.ps1 up                                                     # the backend
+.\tests\clients\sandbox\sandbox.ps1 prepare -ImageDir "<kiosk image>\Redbox" -StoreId <store ID>   # once
+.\tests\clients\sandbox\sandbox.ps1 up                                  # ~1 min to provision, ~2 more to register
+.\tests\clients\sandbox\sandbox.ps1 status
+.\tests\clients\sandbox\sandbox.ps1 down
+```
+
+- **prepare** builds the inputs under `-Work` (default `E:\temp\rb-sandbox`; nothing in the repository):
+  - the Python embeddable package and com0com 2.2.2.0, pinned by SHA-256;
+  - the emulator's Python packages, pinned with hashes in `tools-requirements.txt`;
+  - unredbox/HW-Emu-Python at a pinned commit;
+  - the Kiosk Engine, bundles and Device Service exported from the backend's update store (`admin export`);
+  - the kiosk image's `data` folder, with its service URLs set to Redbox host names, and its configured
+    `halservice` (both copied; the image is not changed);
+  - the backend CA and the store ID;
+  - com0com's driver publisher certificate, taken from its signed catalog (needs 7-Zip), so the sandbox installs
+    the driver without asking.
+- **up** starts `relay.py` (the backend's 127.0.0.1-only ports, relayed from the Hyper-V Default Switch address
+  only) and the sandbox. Its logon command, `provision.ps1`, runs `steps\NN-*.ps1` in order:
+  - `10-com0com`: COM1<->COM10, COM3<->COM13;
+  - `20-hw-emu`;
+  - `30-halsvc`: the real HAL as a Windows service, allowed onto the v4 runtime;
+  - `40-kiosk-network`: hosts entries for Redbox's host names, the CA, and the engine's registry values
+    (`engine-registry.ps1`, including the Device Service simulator card reader);
+  - `50-engine`: also writes `KioskEngineSimulatedCardReaderData.json`, see `docs/engine-known-issues.md`.
+
+  Afterwards `loop.ps1` runs scripts dropped into the control folder (`run-sandbox-step.ps1 -Script|-Command`).
+- **status** shows the provisioning log and the broker's view of the kiosk; **down** closes the sandbox and the
+  relay. Only one sandbox can run at a time, so `up` refuses while one is still open.
+- Then send Reserve3 / Cancel to the store ID from the dashboard's Reservation broker page.
+
+Checked twice from scratch (`down`, then `up`):
+- the sandbox provisioned itself in about 40 s without any prompt;
+- HAL initialized against the emulator;
+- the engine reached the start view and registered with the broker;
+- a Reserve3 held a disc, and the Cancel removed it.
 
 To run the engine on this PC instead (it writes `HKLM\SOFTWARE\WOW6432Node\Redbox\REDS\Kiosk Engine`), give your
 account write access to that key once from an elevated PowerShell, back it up first, then use

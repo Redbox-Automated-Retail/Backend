@@ -2,6 +2,10 @@
 # controller); the emulator serves the other ends, COM10 and COM13. com0com 2.2.2.0 (signed x64 build).
 $ErrorActionPreference = "Continue"
 $dir = "C:\Program Files (x86)\com0com"
+# Trust the driver's publisher first (prepared by sandbox.ps1 from the signed com0com.cat), so Windows installs the
+# driver without asking.
+$pub = "C:\rb\tools\com0com-publisher.cer"
+if (Test-Path $pub) { & certutil.exe -f -addstore TrustedPublisher $pub | Select-Object -Last 2 }
 if (-not (Test-Path "$dir\setupc.exe")) {
     $src = Get-ChildItem C:\rb\tools\com0com -Recurse -Filter setup.exe | Select-Object -First 1
     "installing $($src.FullName)"

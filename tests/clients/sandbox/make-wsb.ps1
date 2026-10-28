@@ -10,7 +10,8 @@
     -ToolsDir     -> C:\rb\tools (read-only)              (python embeddable + pyserial, com0com, pcb.py/arcus.py)
     -ControlDir   -> C:\rb\control                        (command loop: inbox/outbox/done, see loop.ps1)
     this folder   -> C:\rb\clients (read-only)            (setup scripts, engine-registry.ps1)
-  At logon loop.ps1 starts; the host then drops scripts into ControlDir\inbox (see run-sandbox-step.ps1).
+  At logon provision.ps1 runs the setup steps, then loop.ps1 serves ControlDir\inbox (see run-sandbox-step.ps1).
+  Normally called by sandbox.ps1 up.
 #>
 param(
     [string] $RedsDir = "E:\temp\rb-engine2024\Program Files\Redbox\REDS",
@@ -38,7 +39,7 @@ $(Map $ToolsDir 'C:\rb\tools' $true)
 $(Map $ControlDir 'C:\rb\control' $false)
 $(Map $clients 'C:\rb\clients' $true)
   </MappedFolders>
-  <LogonCommand><Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Minimized -File C:\rb\clients\sandbox\loop.ps1</Command></LogonCommand>
+  <LogonCommand><Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Minimized -File C:\rb\clients\sandbox\provision.ps1</Command></LogonCommand>
 </Configuration>
 "@
 Set-Content -Path $Wsb -Value $xml -Encoding UTF8
