@@ -9,7 +9,8 @@ Server behaviour is inferred from the decompiled clients (`src/KioskClient/Kiosk
 Kiosk Engine, Update Client) and the protocol docs in `docs/systems/`. Everything is stored in PostgreSQL (tables
 `cloud_*`, `backend/redbox_backend/schema/50_cloud.sql`; defaults seeded once by `51_cloud_seed.sql`).
 
-Code: `cloudapi/routers/{transaction,inventory,proxy,kioskdata,ads,reels,bluefin,fraud}.py`, helpers
+Code: `cloudapi/routers/{transaction,inventory,proxy,kioskdata,ads,reels,bluefin,fraud,tickets}.py` (tickets: the 2014
+SOAP Ticket Services, §7), helpers
 `cloudapi/{common,customers,stock,media}.py`.
 
 ## 1. Pointing a kiosk at this server
@@ -67,6 +68,7 @@ kiosk id from the body.
 | `CLOUD_API_KEYS` | empty | comma-separated accepted keys (`x-api-key`, `Authorization`, `Authorization: Bearer`) |
 | `CLOUD_PUBLIC_BASE_URL` | from the request | base of URLs the server hands out (planogram, asset and ad files) |
 | `CLOUD_API_HOSTNAME` | machine name | `HostName` in replies |
+| `CLOUD_API_HTTP_PORT` | `80` | extra plain-HTTP listener of the same app (Ticket Services, §7); `0` = off |
 
 Missing or unknown keys are always logged. They are only refused when enforcement is on.
 
@@ -303,3 +305,100 @@ Seeded defaults (applied once, guarded by `cloud_meta` `seed_v1`):
 - `ProductTypeId`, `FormatIds` and `ActionType` in the seeded promo codes are plausible values that the rental app
   passes through. Their real semantics are unknown.
 - Charges for late returns are computed and stored, but nothing charges the card.
+
+## 7. Ticket Services (2014, never deployed)
+
+The kiosk-engine builds in the update-store seeds of Feb/Mar 2014 ship `Redbox.DVD.TicketServices.dll`
+(version 1.3.9.4, x86). It adds event-ticket sales to the rental app through Lua kernel functions
+(`kernel.ticketsvcs_gettickets`, `_placeorder`, `_updateticketlock`, `_releaseticketlock`, `_getemailbycard`,
+`_sendnotification`). These call a WCF "Ticket Controller Service". Redbox apparently never ran this service in
+production; the only URL in the client is a dev host. `routers/tickets.py` implements it from the decompiled
+client.
+
+### 7.1 Endpoint and protocol
+
+`POST /TicketControllerService/ControllerService.svc`. The client uses WCF `basicHttpBinding`: SOAP 1.1,
+`text/xml; charset=utf-8`, no security for `http:` URLs, Transport security for `https:`. Both work here. Plain
+HTTP is served on port 80 by the same process (`CLOUD_API_HTTP_PORT`, published by `rb.ps1 up`). HTTPS is on
+443 as usual.
+
+- The server dispatches on the `SOAPAction` header,
+  `http://www.redbox.com/ControllerServices/Tickets/2012/04/IControllerService/<Operation>`. An empty header
+  falls back to the body's wrapper element. An unknown action gets an `a:ActionNotSupported` fault.
+- Messages are wrapped document/literal with the DataContractSerializer. Request `<Op>` / `<opRequest>` and reply
+  `<OpResponse>` / `<OpResult>` are in the contract namespace. Members are in the namespace of the contract that
+  declares them: base `Request`/`Response` in `...Contract.Schema`, operation types in `...Contract.Schema.<Op>`,
+  `SupplierDisclaimer`/`GeneralError` in the service namespace.
+- Member order is base contract first, then alphabetical; no `[DataMember(Order)]` is set. Required members are
+  always written, with `i:nil="true"` for null strings and `int?`. Replies are generated from the `CONTRACTS`
+  table, which mirrors the client's `[DataMember]` attributes.
+- Faults: `ValidationError` (detail in `...Contract.Schema`, `s:Client`) for bad requests.
+  `GeneralError` (detail in the service namespace, `s:Server`) for internal errors. Both carry
+  `ErrorCorrelationId`, `Message` and `MessageId` (the request's MessageId). HTTP status 500.
+- `GET ...svc?wsdl` returns a WSDL with inline schemas, generated from the same table. WCF's `WsdlImporter`
+  imports it without errors.
+
+### 7.2 Operations and behaviour
+
+State is in the `ticket_*` tables (`schema/52_tickets.sql`). Every call records an event (source `tickets`) and
+touches the kiosk row. Failures the client maps go in `Response.Code` with `Success=false`. The codes are
+`TicketsResponseCode`: 101 not available, 102 no contiguous seats, 103 sold out, 151 card not authorised,
+152 NSF, 153 fraud risk, 154 lock expired/relock failed, 155 merchant failure, 161 declined.
+
+| Operation | Behaviour |
+|---|---|
+| GetTickets | Releases the `UnlockTickets` locks first. Then looks up the production (unknown → ValidationError) and checks that every requested `PriceCodeId` exists and the total is within `ticket_limit_per_order` (else ValidationError). Off sale → 101. It takes up to 3 ticket groups that sell all the requested price codes and have enough free seats (`total - sold - unexpired held locks`). Each one gets a lock (`LockGuid`, `LockDuration` = the production's `lock_duration_minutes`, default 5). Returns them with prices, per-ticket taxes (one `TaxItem`, type 1), delivery methods and the referenced supplier disclaimers. No group with enough seats → 102, or 103 when nothing is left. |
+| UpdateTicketLock | Extends the lock and sets its quantity. An expired lock is re-held if the seats are still free, otherwise 154. A released lock → 154. A sold lock → `Success=false`. Unknown lock or wrong group → ValidationError. |
+| ReleaseTicketLock | Marks the lock released (also when already expired). A sold lock → `Success=false`. |
+| PlaceOrder | Checks every item: lock exists and is not sold, delivery method offered, price codes and per-ticket price/fee match the server, quantity ≤ lock quantity. `OrderHeader` totals must match within 0.01. Any failure → ValidationError. Expired locks are re-held or the order fails with 154. Card decision follows `PAYMENT_MODE`: `approve`; `decline` → 161; `rules` → by last four of `Track2` (0002 → 161, 0003 → 151, 0005 → 152, 0008/0009 → 155, expired → 151). A blocked card or customer (`cloud_cards`/`cloud_customers`) → 153. If approved, the locks are marked sold, `ticket_groups.sold` goes up, `UnlockTickets` are released, card hash → e-mail is remembered, and the new `OrderId` is returned. A declined order is stored too (OrderId 0 is returned, locks stay held). A replayed MessageId returns the stored result. Track data and the encrypted PAN are not stored; the last four digits are. |
+| GetEmailByCard | Looks up `HashedCreditCardNumber` in `ticket_card_emails` (from earlier orders). Falls back to a `cloud_cards` row keyed `sha256("id:" + hash)` (the KCS card-id fingerprint, `customers.card_key`) and its customer's e-mail. Not found → `Success=false`, `Email` nil. |
+| SendNotification | Needs `CustomerEmail` or `CustomerSMSPhone` (else ValidationError). Stores the sign-up in `ticket_notifications`, linked to a `cloud_customers` row with that e-mail. Nothing is sent. |
+
+Sample data (invented): delivery methods 1 WILL CALL and 2 EMAIL, plus productions 70001 (concert, 3 groups),
+70002 (basketball, 2 groups) and 70003 (comedy club, one group of 4 seats). Price codes are 1 Adult,
+2 Child and 3 Senior. Edit the tables to sell other events.
+
+### 7.3 Pointing a 2014 kiosk at it
+
+`TicketServiceProxy.Url` reads the URL only from the engine's "system" configuration: section `general`, key
+`TicketServicesURL` (`IConfigurationService.TryGetConfigurationData("system", "general", "TicketServicesURL")`).
+Neither the endpoint address in `kioskengine.exe.config` nor the unused `DefaultTicketServicesUrl` constant
+(`http://tickets-dev.redbox.com/...`) is used for the address. So:
+
+- Set `General` / `TicketServicesURL` in the engine's system configuration to
+  `http://<server>/TicketControllerService/ControllerService.svc` (or `https://...`; the server certificate
+  includes `tickets-dev.redbox.com`, and the kiosk must trust the local CA).
+- To keep the original value `http://tickets-dev.redbox.com/TicketControllerService/ControllerService.svc`, add
+  a hosts entry `<server-ip> tickets-dev.redbox.com`. Host port 80 must be reachable (`BIND_ADDRESS`).
+- The machine-settings key `Remote Services\Ticket Services` holds the debug switches `LiveCall<Op>` (default
+  true; false makes the proxy simulate replies locally) and `TicketServicesTimeout`. Leave `LiveCall*` on.
+  `TicketServicesTimeout` is not applied to the binding: WCF defaults apply (1 minute send timeout, 64 KB
+  `maxReceivedMessageSize`, so keep replies small).
+
+The kiosk's event catalogue (`tickets-profile.data`, `tickets-images.zip`, read by `TicketDataService`) is a local
+file. It reaches the kiosk outside this service and is not served here. The `ProductionId`s and price codes in it
+must exist in `ticket_productions` / `ticket_price_codes`.
+
+### 7.4 Tests
+
+- `tests/test_tickets.py` covers the protocol in-process. It checks element names, namespaces and member order;
+  locks, expiry and relock; inventory; orders, replays and declines; GetEmailByCard; notifications; both fault
+  types; WSDL; and the plain-HTTP listener of the running container.
+- `tests/clients/run-ticketservices-harness.ps1 -Dll <path>\Redbox.DVD.TicketServices.dll [-Url ...]` drives the
+  DLL's own `ControllerServiceClient` (internal, via reflection, `TicketServicesHarness.cs`) from 32-bit Windows
+  PowerShell 5.1. It calls every operation, checks that each reply and the ValidationError fault deserialize,
+  and imports `?wsdl` with `WsdlImporter`. Each run buys 2 tickets from production 70001.
+
+### 7.5 Inferred
+
+- All server behaviour: which groups to suggest and how many, locking every suggested group, availability and
+  relock rules, price and total validation, which failures are faults and which are `Success=false`.
+- `LockDuration` is taken to be minutes (the client's mock uses 5; the unit is not visible in the client).
+- `TaxItem.TaxAmt` is taken to be the per-ticket tax, and tax type 1 is invented.
+- GetEmailByCard's link to KCS card fingerprints assumes the engine's `GenerateCardHashId()` equals the KCS
+  `CardId`. This is unverified, so in practice the e-mail comes from earlier ticket orders.
+- The client has two bugs that the server tolerates. `SendNotification` resets its array index inside the loop,
+  so only the first subscription arrives and the rest are nil. `PlaceOrder` swaps `FirstName`/`LastName`; the
+  server stores them swapped back.
+- GeneralError is only produced for unexpected server errors. The real client was run against ValidationError
+  only; the GeneralError detail shape is tested in pytest.

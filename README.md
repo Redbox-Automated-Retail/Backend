@@ -43,7 +43,7 @@ flowchart LR
 | `rb-db` | `postgres:16-alpine` | Shared state: kiosks, events, update repositories, file sets, configuration, IoT certificates, transactions, inventory, customers, ... | none |
 | `rb-updatesvc` | `redbox-backend` `updatesvc` | Legacy **Update Service** for `updatemgrd`: `srcp://` command port, HTTP content for BITS | 7002 (TLS), 7080 (HTTP), optional plain `rcp://` port |
 | `rb-iot` | `redbox-backend` `iot` | **AWS IoT Core** stand-in for the Update Client: MQTT broker, IoT rules, RPC handlers, configuration sync, operator API | 8883 (MQTT/TLS), 127.0.0.1:8081 |
-| `rb-cloudapi` | `redbox-backend` `cloudapi` | **Every HTTPS API** on one host: Transaction, Inventory, Proxy Service, Kiosk Data Service, Ad Server, Product Reels, Bluefin, IoT certificate service, S3 | 443 |
+| `rb-cloudapi` | `redbox-backend` `cloudapi` | **Every HTTPS API** on one host: Transaction, Inventory, Proxy Service, Kiosk Data Service, Ad Server, Product Reels, Bluefin, IoT certificate service, S3; the 2014 Ticket Services (SOAP) also on plain HTTP | 443, 80 |
 | `rb-admin` | `redbox-backend` `dashboard` | **Admin dashboard** (web UI + JSON API) over the same database and the IoT operator API | 127.0.0.1:8443 |
 
 One Python 3.12 image (`Dockerfile`) holds all services; the code is in `redbox_backend/`:
@@ -111,6 +111,7 @@ configuration put back to the shipped Redbox values (the image's `.staged_` copi
    <ip> adserver.kiosk.prod.redbox.com reels.product.prod.redbox.com
    <ip> iotcertificateservice.kiosk.prod.redbox.com files.kiosk.prod.redbox.com
    <ip> aj5a0v5j9z9ai-ats.iot.us-east-1.amazonaws.com a2zxs75ezdmapj-ats.iot.us-east-1.amazonaws.com
+   <ip> tickets-dev.redbox.com          # only for 2014 engines with the ticket feature
    ```
 
    (`files.kiosk.prod.redbox.com` is invented by this backend for presigned S3 URLs.) To use your own names
@@ -291,6 +292,12 @@ Endpoint-by-endpoint status, behaviour and inferences are in `docs/cloud-apis.md
   Product Reels; Bluefin activation.
 - **Logged only**: disc action/fraud bodies, ad analytics, ping failures.
 - **Fraud services**: no client code reads `FraudServicesUrl`/`AwsFraudServicesUrl`, so there is nothing to serve.
+- **Ticket Services (2014 engines, never deployed by Redbox)**: the WCF/SOAP Ticket Controller Service the
+  2014 `Redbox.DVD.TicketServices.dll` calls (GetTickets, Update/ReleaseTicketLock, PlaceOrder, GetEmailByCard,
+  SendNotification) at `/TicketControllerService/ControllerService.svc` on port 80, with event inventory, seat
+  locks and orders in the database and sample events seeded (invented). Point a 2014 kiosk at it with the
+  engine's `general/TicketServicesURL` setting or a hosts entry for `tickets-dev.redbox.com`. Details in
+  `docs/cloud-apis.md` section 7.
 - **Invented** (no client evidence either way): loyalty points and tiers, gift-card starting balance, the
   decline rules of `PAYMENT_MODE=rules`.
 
@@ -311,7 +318,7 @@ Endpoint-by-endpoint status, behaviour and inferences are in `docs/cloud-apis.md
 
 ## Verification
 
-What was run (all containers built and running under WSLC 3.0.3; `rb.ps1 test` = 43 passing tests):
+What was run (all containers built and running under WSLC 3.0.3; `rb.ps1 test` = 64 passing tests):
 
 - **Update store import**: every repository of the kiosk image's store imports; all 11 software
   repositories reconstruct to their head with every SHA-1 checked (kop-v2-engine: 1,051 Redbox VCDIFF deltas,
@@ -352,6 +359,9 @@ What was run (all containers built and running under WSLC 3.0.3; `rb.ps1 test` =
   harness) a store laid out from the 2014 seed received the later revisions of kop-scripts, kop-tools and
   kop-update-manager over BITS, unpacked them and ended at the served heads (staging into `C:\Program Files`
   was not run: not elevated). The store installer was only inspected (strings, embedded Lua), never run.
+- **Ticket Services**: the real 2014 WCF client (the DLL's own `ControllerServiceClient`, driven by
+  `tests/clients/run-ticketservices-harness.ps1`) called all six operations, including faults and nil values,
+  and WCF's `WsdlImporter` read the WSDL; `tests/test_tickets.py` covers the same in pytest.
 - **Admin dashboard**: `tests/test_dashboard.py` (login, forged cookie, CSRF header, table edits that the Proxy
   Service then honours, configuration values, multipart publishing) and a run in the browser: log in (a wrong
   password is refused and logged), Overview, Kiosks, a kiosk page with Ping / push configuration / Peek logs

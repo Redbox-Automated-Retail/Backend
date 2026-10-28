@@ -42,6 +42,8 @@ BACKEND_PUBLIC_IP = _env("BACKEND_PUBLIC_IP", "127.0.0.1")
 
 # Kiosk cloud HTTPS APIs.
 CLOUD_API_PORT = int(_env("CLOUD_API_PORT", "443"))
+# Extra plain-HTTP listener of the same app (the 2014 Ticket Services client uses http://...:80); 0 = off.
+CLOUD_API_HTTP_PORT = int(_env("CLOUD_API_HTTP_PORT", "80"))
 # Base URL of the S3 stand-in that presigned URLs point at.
 S3_BASE_URL = _env("S3_BASE_URL", "https://files.kiosk.prod.redbox.com")
 S3_SIGNING_KEY = _env("S3_SIGNING_KEY", "")  # generated into CERT_DIR when empty
@@ -67,6 +69,7 @@ DEFAULT_HOSTNAMES = [
     "reels.product.prod.redbox.com",
     "iotcertificateservice.kiosk.prod.redbox.com",
     "files.kiosk.prod.redbox.com",
+    "tickets-dev.redbox.com",
     "aj5a0v5j9z9ai-ats.iot.us-east-1.amazonaws.com",
     "a2zxs75ezdmapj-ats.iot.us-east-1.amazonaws.com",
     "localhost",

@@ -20,7 +20,7 @@
     rb.ps1 test                  run the protocol tests inside a container against the running stack
 
   Settings come from backend\local\backend.env (copy example.env). Host ports: 443 (cloud APIs, IoT
-  certificate service, S3), 7002 (srcp Update Service), 7080 (change-set downloads), 8883 (MQTT/TLS);
+  certificate service, S3; plain HTTP on 80 for the 2014 Ticket Services), 7002 (srcp Update Service), 7080 (change-set downloads), 8883 (MQTT/TLS);
   8081 (IoT operator API) and 8443 (admin dashboard) are published on 127.0.0.1 only by default.
 #>
 param(
@@ -104,7 +104,7 @@ switch ($Command) {
         $bind = if ($vars["BIND_ADDRESS"]) { $vars["BIND_ADDRESS"] + ":" } else { "0.0.0.0:" }
         $plain = if ($vars["UPDATE_SERVICE_PLAIN_PORT"] -and $vars["UPDATE_SERVICE_PLAIN_PORT"] -ne "0") { @("$bind$($vars['UPDATE_SERVICE_PLAIN_PORT']):$($vars['UPDATE_SERVICE_PLAIN_PORT'])") } else { @() }
         $mplain = if ($vars["MQTT_PLAIN_PORT"] -and $vars["MQTT_PLAIN_PORT"] -ne "0") { @("$bind$($vars['MQTT_PLAIN_PORT']):$($vars['MQTT_PLAIN_PORT'])") } else { @() }
-        Start-Service "rb-cloudapi" "rb-cloudapi" @("${bind}443:443") @("python", "-m", "redbox_backend", "cloudapi") $ucsMount $ucsEnv
+        Start-Service "rb-cloudapi" "rb-cloudapi" @("${bind}443:443", "${bind}80:80") @("python", "-m", "redbox_backend", "cloudapi") $ucsMount $ucsEnv
         Start-Service "rb-updatesvc" "rb-updatesvc" (@("${bind}7002:7002", "${bind}7080:7080") + $plain) @("python", "-m", "redbox_backend", "updatesvc")
         # Admin dashboard: localhost only unless ADMIN_BIND_ADDRESS says otherwise.
         $adminBind = if ($vars["ADMIN_BIND_ADDRESS"]) { $vars["ADMIN_BIND_ADDRESS"] } else { "127.0.0.1" }
