@@ -18,8 +18,8 @@ How the client reads replies (Redbox.Core JavaScriptSerializer into Dictionary<s
   money is always written with a fraction (Python floats) and counts as ints.
 - DateTime values the client converts with ToObject<DateTime> are Redbox.Core objects
   {"theDate": ticks, "dateTimeKind", "dateString"} (dotnet.redbox_datetime). A raw `(DateTime)` cast of a
-  dictionary value would need the "\\/Date(ms)\\/" form, which json.dumps cannot produce, so such keys
-  (customer offer ExpirationDate) are left out and the client's default applies.
+  dictionary value (customer offer ExpirationDate) needs the JavaScriptSerializer date literal "\\/Date(ms)\\/"
+  (escaped slashes): handlers write "/Date(ms)/" (`ms_date`) and `dumps`, which both transports use, escapes it.
 - 2014-2016 engines take `IsOnline` from every reply (UpdateOnlineStatus) and drain their message queue only
   while it is true, so every reply has IsOnline=true and ServerBusy=false.
 """
@@ -28,6 +28,7 @@ import datetime as _dt
 import decimal
 import json
 import logging
+import re
 import uuid
 
 from starlette.requests import Request
@@ -111,6 +112,23 @@ def _wire(o):
     if isinstance(o, uuid.UUID):
         return str(o)
     return o
+
+
+def ms_date(value):
+    """'/Date(ms)/' for a datetime or ISO text; `dumps` makes it the literal JavaScriptSerializer reads as a DateTime."""
+    if isinstance(value, str):
+        value = _dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=_dt.timezone.utc)
+    return "/Date(%d)/" % int(value.timestamp() * 1000)
+
+
+_MS_DATE = re.compile(r'"/Date\((-?\d+)\)/"')
+
+
+def dumps(result):
+    """Reply JSON as the client must receive it: ms_date values with the escaped slashes of a .NET date literal."""
+    return _MS_DATE.sub(r'"\\/Date(\1)\\/"', json.dumps(result, default=str))
 
 
 def _ticks_to_dt(ticks):
@@ -406,7 +424,11 @@ async def ks_EstimateRedemption(msg, kiosk):
 def _ks_offer(o):
     """KCS CustomerOfferResult -> the dictionary CustomerOfferProxy.ParseOffer reads."""
     out = dict(o)
-    out.pop("ExpirationDate", None)  # read with a raw (DateTime) cast: not expressible, the client uses today
+    # Read with a raw (DateTime) cast, so it must be a .NET date literal; without one the client uses today.
+    if out.get("ExpirationDate"):
+        out["ExpirationDate"] = ms_date(out["ExpirationDate"])
+    else:
+        out.pop("ExpirationDate", None)
     dt = out.get("DiscountType")
     names = ["PercentOff", "AmountOff", "Treatment", "Loyalty", "Vip", "Free", "MultiNightPrice"]
     if isinstance(dt, int) and 0 <= dt < len(names):

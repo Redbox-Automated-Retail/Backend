@@ -209,7 +209,8 @@ def test_customer_offers(c):
     offer = next(o for o in r["StoredOffers"] if o["CampaignId"] == 77)
     assert offer["DiscountType"] == "AmountOff" and offer["IncludeFormats"] == ["2", "3"]
     assert offer["IncludeTitleIds"] == [55] and offer["StoredOfferId"] == offer["OfferId"]
-    assert "ExpirationDate" not in offer and isinstance(offer["DiscountAmount"], float)
+    # "/Date(ms)/" in the dict; the transports write it as the escaped .NET literal (test_remoting.py)
+    assert offer["ExpirationDate"].startswith("/Date(") and isinstance(offer["DiscountAmount"], float)
 
 
 # ------------------------------------------------------------------ digital services (2014-2016)

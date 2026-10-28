@@ -23,6 +23,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
 from ... import certs, db
+from .. import kioskservices
 
 log = logging.getLogger("cloudapi.remoting")
 router = APIRouter()
@@ -37,7 +38,6 @@ def _check_internal(request: Request):
 
 
 async def _process(text, transport, request):
-    from .. import kioskservices
     try:
         message = json.loads(text) if text else {}
     except json.JSONDecodeError:
@@ -47,8 +47,9 @@ async def _process(text, transport, request):
     except Exception as e:  # never return a stack trace to a kiosk
         log.exception("kiosk services message failed")
         result = {"Success": False, "Error": f"{type(e).__name__}: {e}"}
-    kid = message.get("KioskId") or message.get("StoreNumber") or request.headers.get("x-redbox-kioskid")
-    await db.record_event(kid, "kioskservices", str(message.get("MessageType") or "unknown"),
+    inner = message.get("ReturnMessage") if isinstance(message.get("ReturnMessage"), dict) else message  # queued Return
+    kid = inner.get("KioskId") or message.get("StoreNumber") or request.headers.get("x-redbox-kioskid")
+    await db.record_event(kid, "kioskservices", str(inner.get("MessageType") or "unknown"),
                           {"transport": transport, "request": _scrub(message), "success": result.get("Success")})
     return result
 
@@ -71,7 +72,7 @@ async def message_service(request: Request):
     if ctype.startswith("application/x-www-form-urlencoded"):
         form = urllib.parse.parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True)
         result = await _process((form.get("payload") or [""])[0], "rest", request)
-        text = urllib.parse.quote(json.dumps(result, default=str), safe="")
+        text = urllib.parse.quote(kioskservices.dumps(result), safe="")
         return Response(text, media_type="text/plain; charset=utf-8")
     # Binary remoting: hand the HTTP request to Mono's HttpChannel as is.
     headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host", "content-length", "connection",
@@ -91,7 +92,7 @@ async def message_service(request: Request):
 async def internal_process(request: Request, transport: str = "remoting"):
     _check_internal(request)
     result = await _process((await request.body()).decode("utf-8", "replace"), transport, request)
-    return Response(json.dumps(result, default=str), media_type="application/json")
+    return Response(kioskservices.dumps(result), media_type="application/json")
 
 
 @router.post("/_internal/broker/registered")

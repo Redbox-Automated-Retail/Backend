@@ -145,3 +145,22 @@ def test_dashboard_reserve_to_unconnected_kiosk_is_recorded(admin):
     failed = [q for q in d["requests"] if q["kiosk_id"] == kid]
     assert failed and failed[0]["kind"] == "reserve" and failed[0]["success"] is False
     assert "not connected" in failed[0]["error"]
+
+
+def test_offer_expiry_is_a_dotnet_date_literal(c):
+    r"""CustomerOfferProxy reads ExpirationDate with a raw (DateTime) cast: it must be "\/Date(ms)\/" on the wire."""
+    import datetime as dt
+    from redbox_backend.cloudapi import kioskservices as ks
+    assert ks.dumps({"d": ks.ms_date("2026-11-06T17:30:00Z"), "s": "/Date(1)/x"}) == \
+        '{"d": "\\/Date(1793986200000)\\/", "s": "/Date(1)/x"}'
+    kid = cc.new_kiosk()
+    expires = dt.datetime(2031, 5, 4, 12, 0, tzinfo=dt.timezone.utc)
+    c.sql("INSERT INTO cloud_customer_offers (campaign_id, data, expires_at) VALUES (%s, '{}', %s)", kid, expires)
+    try:
+        body = "payload=" + urllib.parse.quote(json.dumps({"MessageType": "GetCustomerOffers", "KioskId": kid,
+                                                           "CreditCard": {"CardId": str(uuid.uuid4())}}))
+        r = raw(c, PATH, body.encode(), headers={"content-type": "application/x-www-form-urlencoded"})
+        text = urllib.parse.unquote(r.text)
+        assert '"ExpirationDate": "\\/Date(%d)\\/"' % int(expires.timestamp() * 1000) in text
+    finally:
+        c.sql("DELETE FROM cloud_customer_offers WHERE campaign_id = %s", kid)
