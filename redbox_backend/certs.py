@@ -132,6 +132,15 @@ def issue_device_certificate(kiosk_id, pfx_password):
     return pfx, certificate_id, cert
 
 
+def internal_token():
+    """Shared secret for service-to-service calls (/_internal/*), kept in the certs volume."""
+    p = cert_dir() / "internal.key"
+    if not p.exists():
+        p.write_text(secrets.token_hex(32))
+        os.chmod(p, 0o644)  # read by the Mono remoting host, which runs as another user
+    return p.read_text().strip()
+
+
 def ca_pem():
     return (cert_dir() / "ca.crt").read_text()
 
@@ -140,6 +149,7 @@ def ensure_all(force=False):
     create_ca(force=force)
     create_server_cert(force=force)
     s3_key()
+    internal_token()
 
 
 def main(argv):

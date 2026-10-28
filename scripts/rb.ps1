@@ -10,7 +10,7 @@
     rb.ps1 down                  stop and remove the containers (data volumes are kept)
     rb.ps1 reset [-Force]        down + delete the volumes (database, content, certificates)
     rb.ps1 status                containers and health
-    rb.ps1 logs <service>        service = db | updatesvc | cloudapi | iot | admin
+    rb.ps1 logs <service>        service = db | updatesvc | cloudapi | iot | admin | remoting
     rb.ps1 set-admin-password [user]  set the dashboard login (hash stored in local\backend.env)
     rb.ps1 admin <args...>       python -m redbox_backend admin <args> inside rb-iot
     rb.ps1 admin-in <dir> <args> same, in a one-off container with <dir> mounted at /in
@@ -33,6 +33,7 @@ $Wslc = "C:\Program Files\WSL\wslc.exe"
 $Backend = Split-Path -Parent $PSScriptRoot
 $Repo = Split-Path -Parent $Backend
 $Image = "redbox-backend:latest"
+$RemotingImage = "redbox-remoting:latest"
 $Network = "redbox"
 $Volumes = @{ pg = "rb-pgdata"; data = "rb-data"; certs = "rb-certs" }
 $EnvFile = Join-Path $Backend "local\backend.env"
@@ -79,6 +80,9 @@ function Start-Service($name, $alias, $ports, $cmd, $extraVolumes = @(), $extraE
 switch ($Command) {
     "build" {
         W build -t $Image $Backend
+        # Mono host for the legacy .NET Remoting backends; its context is the repository root because it
+        # compiles the kiosk's contract assemblies from src/ (only the files in Dockerfile.dockerignore are sent).
+        W build -t $RemotingImage -f (Join-Path $Backend "remoting\Dockerfile") $Repo
     }
     "up" {
         if (-not (WQuiet network inspect $Network)) { W network create $Network | Out-Null }
@@ -118,11 +122,18 @@ switch ($Command) {
             $pkgMount = @("-v", "$((Resolve-Path $vars['PACKAGES_DIR']).Path):/packages:ro"); $pkgEnv["RB_PACKAGES_DIR"] = "/packages"
         }
         Start-Service "rb-admin" "rb-admin" @("${adminBind}:${adminPort}:${adminPort}") $adminCmd $pkgMount $pkgEnv
+        # Legacy .NET Remoting (Mono): reservation broker on gtcp 7890 (published); the MessageService (8090) and
+        # the control API (8091) stay on the WSLC network - rb-cloudapi fronts the MessageService on 443.
+        if (Container-Exists "rb-remoting") { [void](WQuiet remove -f "rb-remoting") }
+        $renv = Env-Args @{ BACKEND_URL = "http://rb-cloudapi:80" }
+        W run -d --name rb-remoting --network $Network --network-alias rb-remoting -v "$($Volumes.certs):/certs:ro" `
+            -p "${bind}7890:7890" @renv $RemotingImage | Out-Null
+        Write-Host "started rb-remoting"
         Start-Service "rb-iot" "rb-iot" (@("${bind}8883:8883", "127.0.0.1:8081:8081") + $mplain) @("python", "-m", "redbox_backend", "iot")
         & $PSCommandPath status
     }
     "down" {
-        foreach ($c in "rb-admin", "rb-iot", "rb-updatesvc", "rb-cloudapi", "rb-db") {
+        foreach ($c in "rb-admin", "rb-iot", "rb-remoting", "rb-updatesvc", "rb-cloudapi", "rb-db") {
             if (Container-Exists $c) { [void](WQuiet remove -f $c); Write-Host "removed $c" }
         }
     }
