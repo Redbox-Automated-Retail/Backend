@@ -419,7 +419,8 @@ async def transaction(tid: int):
 @app.get("/api/updates/repos")
 async def repos():
     rows = await db.fetch(
-        "SELECT r.name, r.auto_subscribe, (SELECT count(*) FROM upd_revisions v WHERE v.repo = r.name) AS revisions,"
+        "SELECT r.name, r.auto_subscribe, r.serve_head, r.canonical_edition,"
+        " (SELECT count(*) FROM upd_revisions v WHERE v.repo = r.name) AS revisions,"
         " h.hash AS head, h.label, h.created_at AS head_created,"
         " (SELECT count(*) FROM upd_snapshots s WHERE s.repo = r.name AND s.head_hash = h.hash) AS snapshot_files,"
         " (SELECT count(*) FROM upd_store_heads x WHERE x.repo = r.name AND x.head = h.hash) AS stores_current,"
@@ -503,6 +504,75 @@ async def links(body: dict):
         await db.execute("INSERT INTO upd_store_repos (number, repo, linked) VALUES (%s,%s,%s) ON CONFLICT (number, repo)"
                          " DO UPDATE SET linked = EXCLUDED.linked", number, name, mode == "linked")
     return ok({"subscribed": await repo.repositories_for_store(number)})
+
+
+@app.post("/api/updates/repos/{name}/pin")
+async def repo_pin(name: str, body: dict):
+    """Serve an older revision (or the newest with revision = null); fresh kiosks then get its snapshot."""
+    rev = (body.get("revision") or "").upper() or None
+    if rev and not await db.fetchval("SELECT 1 FROM upd_revisions WHERE repo=%s AND hash=%s", name, rev):
+        raise HTTPException(404, "unknown revision")
+    await db.execute("UPDATE upd_repositories SET serve_head=%s WHERE name=%s", rev, name)
+    res = await repo.build_snapshot(name, rev)
+    await db.record_event(None, "dashboard", "pin", {"repo": name, "revision": rev, "snapshot_files": res["files"]})
+    return ok({k: v for k, v in res.items() if k != "problems"} | {"problems": res["problems"][:20]})
+
+
+# ----------------------------------------------------------------------------------------- packages
+
+PACKAGES_DIR = os.environ.get("RB_PACKAGES_DIR")
+_import_tasks = set()
+
+
+@app.get("/api/packages")
+async def packages():
+    from ..updatesvc import editions as ed
+    files = []
+    if PACKAGES_DIR and os.path.isdir(PACKAGES_DIR):
+        known = {e["source"]: e for e in await db.fetch("SELECT name, source, imported_at FROM upd_editions")}
+        for p in sorted(pathlib.Path(PACKAGES_DIR).glob("*.zip")):
+            src = f"{PACKAGES_DIR.rstrip('/')}/{p.name}"
+            files.append({"file": p.name, "size": p.stat().st_size, "date": ed.edition_date(p.stem),
+                          "edition": known.get(src, {}).get("name"), "imported_at": known.get(src, {}).get("imported_at")})
+    return ok({"dir": PACKAGES_DIR, "files": sorted(files, key=lambda f: str(f["date"])),
+               "editions": await db.fetch("SELECT name, source, edition_date, heads, revisions, imported_at"
+                                          " FROM upd_editions ORDER BY edition_date"),
+               "jobs": await db.fetch("SELECT * FROM upd_import_jobs ORDER BY id DESC LIMIT 10")})
+
+
+@app.post("/api/packages/import")
+async def packages_import(body: dict):
+    from ..updatesvc import editions as ed
+    if not PACKAGES_DIR:
+        raise HTTPException(400, "no packages folder is mounted (set PACKAGES_DIR and run rb.ps1 up)")
+    names = body.get("files") or [p.name for p in pathlib.Path(PACKAGES_DIR).glob("*.zip")]
+    paths = []
+    for n in names:
+        p = pathlib.Path(PACKAGES_DIR) / pathlib.PurePath(n).name
+        if not p.is_file():
+            raise HTTPException(404, f"{n} not found")
+        paths.append(str(p))
+    dvd = body.get("dvd_data", "latest")
+    job = await db.fetchval("INSERT INTO upd_import_jobs (source, options) VALUES (%s,%s) RETURNING id",
+                            ", ".join(pathlib.Path(p).name for p in paths), db.jsonb({"dvd_data": dvd}))
+
+    async def progress(msg):
+        await db.execute("UPDATE upd_import_jobs SET progress = progress || %s WHERE id=%s",
+                         db.jsonb([{"t": dt.datetime.now(dt.timezone.utc).isoformat(), "m": msg}]), job)
+
+    async def run():
+        try:
+            await ed.import_sources(paths, dvd_data=dvd, progress=progress)
+            await db.execute("UPDATE upd_import_jobs SET status='done', finished_at=now() WHERE id=%s", job)
+        except Exception as e:
+            log.exception("import failed")
+            await progress(f"failed: {e}")
+            await db.execute("UPDATE upd_import_jobs SET status='failed', finished_at=now() WHERE id=%s", job)
+    task = asyncio.create_task(run())
+    _import_tasks.add(task)
+    task.add_done_callback(_import_tasks.discard)
+    await db.record_event(None, "dashboard", "package-import", {"job": job, "files": names, "dvd_data": dvd})
+    return ok({"job": job})
 
 
 @app.get("/api/filesets")

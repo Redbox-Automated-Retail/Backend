@@ -358,6 +358,7 @@ routes.updates = async () => {
   const [rp, st] = await Promise.all([api("/updates/repos"), api("/updates/stores")]);
   view().innerHTML = `<h3>Repositories</h3><p class="muted">Kiosks poll every 15 minutes (<code>u p</code>); a kiosk without a repository gets a full snapshot, one at an older revision gets the later revisions.</p>
     ${table(rp, [{ key: "name", label: "Repository" }, { key: "revisions", label: "Revisions" }, { key: "head", label: "Head", render: short }, { key: "label", label: "Label" },
+      { key: "serve_head", label: "Served", render: (v) => v ? pill("pinned " + v.slice(0, 10), "warn") : "newest" }, { key: "canonical_edition", label: "From edition" },
       { key: "head_created", label: "Head added" }, { key: "snapshot_files", label: "Snapshot files" },
       { key: "stores_current", label: "Stores current", render: (v, r) => `${esc(v)} / ${esc(r.stores_reporting)}` }, { key: "auto_subscribe", label: "Auto-subscribe" }], { onclick: true })}
     <h3>Stores and repository assignment</h3><p class="muted">Click a cell to link / unlink / reset to automatic. "auto" means every auto-subscribed repository unless the store has explicit links.</p>
@@ -388,12 +389,22 @@ async function repoDialog(r) {
       <label>Files <input type="file" name="files" multiple required></label>
       <label><input type="checkbox" id="folder"> pick a whole folder</label>
       <button class="primary">Publish</button></form>
+    <form id="pin" class="card mt inline"><label>Serve to kiosks <select name="revision"><option value="">newest revision</option>
+      ${d.revisions.map((v) => `<option value="${esc(v.hash)}" ${v.hash === r.serve_head ? "selected" : ""}>${esc(v.seq)} ${esc(v.hash.slice(0, 10))} ${esc(v.label || "")}</option>`).join("")}</select></label>
+      <button class="primary">Apply</button><span class="muted">Kiosks below it are updated up to it, kiosks without the repository get its snapshot, kiosks past it are left alone.</span></form>
     <div class="toolbar mt"><button id="snap">Rebuild snapshot</button><label><input type="checkbox" id="auto" ${r.auto_subscribe ? "checked" : ""}> offer to every store automatically</label><span class="grow"></span><button id="cl">Close</button></div>
     <h3>Latest revisions</h3>${table(d.revisions, [{ key: "seq" }, { key: "hash", render: short }, { key: "label" }, { key: "changes" }, { key: "seeds" }, { key: "deltas" }, { key: "created_at", label: "Added" }])}
     <h3>Files at head (${d.files.length})</h3>${table(d.files.slice(0, 200), [{ key: "target_path", label: "Folder" }, { key: "target_name", label: "File" }, { key: "version_hash", label: "SHA-1", render: short }])}`);
   $("#cl", m).onclick = closeModal;
   $("#folder", m).onchange = (e) => { $("input[type=file]", m).webkitdirectory = e.target.checked; };
   $("#auto", m).onchange = (e) => act(() => api("/updates/repos/" + encodeURIComponent(r.name), { method: "PUT", body: { auto_subscribe: e.target.checked } }), "Saved");
+  $("#pin", m).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const rev = new FormData(e.target).get("revision");
+    await act(() => api(`/updates/repos/${encodeURIComponent(r.name)}/pin`, { body: { revision: rev || null } }),
+      (x) => `Serving ${rev ? rev.slice(0, 10) : "the newest revision"}; snapshot ${x.files} files from ${x.source}, ${x.problems.length} problems`);
+    closeModal(); routes.updates();
+  });
   $("#snap", m).onclick = () => act(() => api(`/updates/repos/${encodeURIComponent(r.name)}/snapshot`, { body: {} }), (x) => `Snapshot: ${x.files} files, ${x.problems.length} problems`);
   $("#pub", m).addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -403,6 +414,44 @@ async function repoDialog(r) {
     closeModal(); routes.updates();
   });
 }
+
+// -------------------------------------------------------------------------------- update packages
+routes.packages = async () => {
+  title("Update packages");
+  const d = await api("/packages");
+  view().innerHTML = `<p class="muted">Redbox update-store seeds (<code>data-&lt;date&gt;.zip</code>, the data file the store installer
+    activates on a new kiosk) from <code>${esc(d.dir || "(no PACKAGES_DIR mounted)")}</code>, read-only. Each import becomes an edition; every
+    repository is served from the newest edition that has it, with content older editions kept. dvd-data is about 1 GB per seed.</p>
+    <div class="toolbar"><label>dvd-data <select id="dvd"><option value="latest">only from the newest selected seed</option><option value="none">skip</option><option value="all">from every seed</option></select></label>
+    <button class="primary" id="imp" ${d.dir ? "" : "disabled"}>Import selected</button><button id="all" ${d.dir ? "" : "disabled"}>Select all</button></div>
+    <div class="table-wrap"><table><thead><tr><th></th><th>File</th><th>Seed date</th><th>Size</th><th>Imported as</th><th>Imported</th></tr></thead><tbody>
+    ${d.files.map((f) => `<tr><td><input type="checkbox" data-f="${esc(f.file)}"></td><td>${esc(f.file)}</td><td>${esc(f.date)}</td><td>${esc((f.size / 2 ** 20).toFixed(0))} MB</td><td>${esc(f.edition || "")}</td><td>${f.imported_at ? fmtDate(f.imported_at) : ""}</td></tr>`).join("")}
+    </tbody></table></div>
+    <h3>Import jobs</h3><div id="jobs"></div>
+    <h3>Editions</h3>${table(d.editions, [{ key: "name", label: "Edition" }, { key: "edition_date", label: "Date" },
+      { key: "revisions", label: "Repositories (revisions)", wrap: true, render: (v) => esc(Object.entries(v).map(([k, n]) => `${k} ${n}`).join(", ")) },
+      { key: "source" }, { key: "imported_at", label: "Imported" }], { empty: "No edition imported yet." })}`;
+  const drawJobs = (jobs) => {
+    $("#jobs").innerHTML = table(jobs, [{ key: "id" }, { key: "source", wrap: true }, { key: "status", render: (v) => pill(v, v === "done" ? "ok" : v === "failed" ? "bad" : "warn") },
+      { key: "progress", label: "Last step", wrap: true, render: (v) => esc(v.length ? v[v.length - 1].m : "") }, { key: "started_at", label: "Started" }, { key: "finished_at", label: "Finished" }]);
+  };
+  drawJobs(d.jobs);
+  $("#all").onclick = () => $$("input[data-f]").forEach((c) => (c.checked = true));
+  $("#imp").onclick = async () => {
+    const files = $$("input[data-f]").filter((c) => c.checked).map((c) => c.dataset.f);
+    if (!files.length) return toast("Select at least one file", true);
+    await act(() => api("/packages/import", { body: { files, dvd_data: $("#dvd").value } }), (x) => `Import job ${x.job} started`);
+    poll();
+  };
+  const poll = async () => {
+    clearTimeout(routes.packages.timer);
+    if (!location.hash.startsWith("#/packages")) return;
+    const p = await api("/packages");
+    drawJobs(p.jobs);
+    if (p.jobs.some((j) => j.status === "running")) routes.packages.timer = setTimeout(poll, 3000);
+  };
+  if (d.jobs.some((j) => j.status === "running")) poll();
+};
 
 // --------------------------------------------------------------------------------------- file sets
 routes.filesets = async () => {

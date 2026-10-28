@@ -144,6 +144,42 @@ configuration put back to the shipped Redbox values (the image's `.staged_` copi
    (a snapshot would be applied on top and could move files backwards); reset that repository on the kiosk
    (`update-console --reset-repository` or `repository reset`) to reseed it.
 
+5. **A freshly installed kiosk** (store installer + a `data-<date>.zip`): the installer's front end talks to
+   `srcp://updatesvc.redbox.com:7002` first (`installer start` / `installer log`, answered as its
+   `installer-steps.lua` requires: string values, non-empty `HostEntries`, expirations `-1` = never), then
+   activates the seed, and updatemgrd polls from those heads. Import the seeds (below) and such a kiosk is
+   brought from its seed's revisions up to the served head.
+
+## Update packages (Redbox update-store seeds)
+
+Redbox shipped its update store as `data-<date>.zip` seeds (2014-2024): `<repo>/.revlog/<n>`, `.active`,
+`.current` (all zeros: the installer activates them) and `<rev>-<SHA1(path)>.patch`. Put them in a folder,
+set `PACKAGES_DIR` in `local\backend.env` (it is mounted **read-only**; nothing is copied into the repo), and:
+
+```powershell
+.\scripts\rb.ps1 import-packages                 # every data-*.zip in PACKAGES_DIR, oldest first
+.\scripts\rb.ps1 import-store D:\seeds\data-572024.zip
+.\scripts\rb.ps1 admin editions
+.\scripts\rb.ps1 admin pin kop-v2-engine kop-v2-engine-Calvin   # serve an older revision; "latest" to undo
+```
+
+or use the dashboard's **Update packages** page (import with progress) and the repository dialog
+("Serve to kiosks"). What the 13 seeds showed, and how the import handles it:
+
+- Each repository has **one linear history**: every newer seed's revlog extends the older one's. But newer
+  seeds **trim old revisions** (their change lists are emptied and the files re-seeded later), so each seed is
+  self-consistent while older ones keep content the newer ones dropped. Each source is therefore stored as an
+  **edition**; a repository is served from the newest edition that has it, with content from older editions
+  where the newest lacks it, and snapshots of older (pinned) revisions are rebuilt from the edition that still
+  has their content.
+- `dvd-data` does not follow this (every seed carries its own short re-seeded history) and is 12.5 of the
+  13 GB of unique content, so by default only the newest seed's `dvd-data` is imported (`--dvd-data
+  latest|all|none`).
+- Pinning (`serve_head`) caps what kiosks are offered: kiosks below it get the revisions up to it, kiosks
+  without the repository get its snapshot, kiosks already past it get nothing (never a downgrade).
+- The image's own `.store` is newer still for `updateclient` (34 revisions against 33 in the May 2024 seed);
+  importing it as well serves that revision.
+
 ## Admin dashboard
 
 `rb-admin` serves a web UI at **https://localhost:8443** (the same local CA signs it; plain HTTP with
@@ -172,6 +208,7 @@ must also carry `X-Requested-With: rb-admin`, failed logins are slowed down and 
 | Pricing & promotions | Default / price-level / purchase pricing, promo codes, return promo, campaigns, subscription plans, ads |
 | Transactions | Search authorisations, gift cards, pickups, reservations by reference, e-mail, CPN or last four; detail with rentals, returns, customer, card, request and reconcile bodies; links to rentals, returns, reservations, cards |
 | Update Service | Repositories (revisions, head, label, snapshot, how many stores are current); publish a new revision by uploading files or a folder; rebuild a snapshot; auto-subscribe switch; store x repository matrix showing current / behind / missing and link / unlink / automatic per cell |
+| Update packages | The `data-<date>.zip` seeds in `PACKAGES_DIR`: import selected ones in the background with progress, list editions |
 | File sets | Create file sets, upload revisions (with dependencies), deploy to a kiosk, market or all on the Update Client (pushed at once) or updatemgrd channel with an activation window; kiosk states per file set |
 | Configuration | Kiosk configuration values (default / market / kiosk), set or delete and push; engine config files (updatemgrd) with per-setting editing that publishes a new generation |
 | Remote jobs | Any IoT command to a kiosk, market or all (templates for Ping, triggers, clock sync, certificate renewal, `ExecuteHttpRequest` on the kiosk's local APIs, ...), download-file jobs with a PowerShell script, updatemgrd download files with a Lua script, request/answer history, files uploaded by kiosks |
@@ -263,7 +300,13 @@ Endpoint-by-endpoint status, behaviour and inferences are in `docs/cloud-apis.md
   used only when `UseLegacyBrokerService` is true. The 1.88 rental code uses the AWS broker path (BrokerRegister
   over IoT), which is implemented; online reservations pushed *from* the cloud to the kiosk are therefore not
   delivered (the AWS-side mechanism that called the kiosk is not visible in the client code).
-- `Redbox.KioskServices` 1.81 MessageService (`bl2.accessredbox.net`): not loaded by the 1.88 engine.
+- `Redbox.KioskServices` MessageService (`https://bl2.accessredbox.net/KioskServices/MessageService.rem`): not
+  loaded by the 1.88 engine, but the older engines in the 2014-2022 seeds use it (`Redbox.DVD.KioskServices.dll`)
+  for authentication, discount codes, customer offers, loyalty and health. Its default transport is .NET
+  Remoting with the binary formatter, which this backend does not speak (the optional REST mode, `payload=<json>`
+  form posts, would be feasible; not done).
+- Web pages the old Control Panel / Field Maintenance bundles open in a browser (`fieldvisit`,
+  `installchecklist`, `kiosksurvey`.accessredbox.net): not APIs, not served.
 - The Update Client Installer (`localhost:6002`) is a kiosk-local program that is not in the image.
 
 ## Verification
@@ -300,6 +343,15 @@ What was run (all containers built and running under WSLC 3.0.3; `rb.ps1 test` =
   promo 200/422, login, loyalty, marketing, ads with asset caching), with an empty replay queue. Pricing and
   campaign refresh were not exercised through KCS because it reads the kiosk id from the 32-bit registry view
   (`WOW6432Node`), which has no `ID` on this PC; they are covered by the pytest tests only.
+- **Redbox's update-store seeds** (13 `data-<date>.zip`, 2014-2024, read-only fixtures in
+  `tests/test_packages.py` when `PACKAGES_DIR` is set): all import; every served repository (all 11 software
+  repositories and the newest `dvd-data`) rebuilds to its head with every SHA-1 checked; the 2014 seed rebuilds
+  on its own; and a kiosk installed from the 2014 seed is patched forward to the served head with the client's
+  rules for all 8 repositories the 2014 seed has (kop-v2-engine: 361 revisions, 1,181 seed/VCDIFF steps), ending
+  identical to the served snapshot. With the real updatemgrd code (`tests/clients/seed_store_from_zip.py` + the
+  harness) a store laid out from the 2014 seed received the later revisions of kop-scripts, kop-tools and
+  kop-update-manager over BITS, unpacked them and ended at the served heads (staging into `C:\Program Files`
+  was not run: not elevated). The store installer was only inspected (strings, embedded Lua), never run.
 - **Admin dashboard**: `tests/test_dashboard.py` (login, forged cookie, CSRF header, table edits that the Proxy
   Service then honours, configuration values, multipart publishing) and a run in the browser: log in (a wrong
   password is refused and logged), Overview, Kiosks, a kiosk page with Ping / push configuration / Peek logs
