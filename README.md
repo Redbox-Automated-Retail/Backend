@@ -145,7 +145,7 @@ configuration put back to the shipped Redbox values (the image's `.staged_` copi
    | Kiosk Engine | `data\system.config` (config file OID 1, delivered by `u pr`) | `General/KioskDataServicesUrl`, `DeviceService/BluefinServiceUrl` | `https://dataservice.kiosk.prod.redbox.com`, `.../bluefinservice` - import with `--rewrite` or edit and `admin config-file-set` |
    | Device Service | `REDS\DeviceService\bin\Data\KioskData.json` | `ApiUrl` | `https://dataservice.kiosk.prod.redbox.com` (rewritten by the engine's `CheckDeviceStatus` from the kiosk's `KioskDataServicesUrl`) |
    | Registry | `HKLM\SOFTWARE\Redbox\REDS\Kiosk Engine\Store` | `ID`, `Market` | the kiosk id is the store number for every service |
-   | Kiosk Engine (legacy broker) | `HKLM\SOFTWARE\Redbox\REDS\Kiosk Engine\Remote Services\Reservation Services` | `BrokerServicesURL` | default `gtcp://blt.accessredbox.net:7890/RegistrationBroker/Default.rem`; only used when the rental configuration's `UseLegacyBrokerService` is true |
+   | Kiosk Engine (legacy broker) | `HKLM\SOFTWARE\Redbox\REDS\Kiosk Engine\Remote Services\Reservation Services` | `BrokerServicesURL` | code default `gtcp://blt.accessredbox.net:7890/RegistrationBroker/Default.rem`; production kiosks had `gtcp://blt.accessredbox.net:443/...` (from a kiosk's registry export), so set it to `:7890` or give rb-remoting a host where it can listen on 443; used when `UseLegacyBrokerService` is true (the 1.88 default) |
    | Kiosk Engine (KioskServices) | `HKLM\SOFTWARE\Redbox\REDS\Kiosk Engine\Remote Services\Store Services` | `KioskServicesURL`, `KioskServicesProtocol`, `KioskServicesTimeout` | default `https://bl2.accessredbox.net/KioskServices/MessageService.rem`, `Remoting` (or `REST`), 30000 ms |
 
    See `docs/cloud-apis.md` for the cloud-API settings in detail.
@@ -222,6 +222,35 @@ authenticated with `X-Internal-Token` from `rb-certs/internal.key`), which write
   build time) replaces that constructor's body with `ret`; it only primed a buffer pool. The DLL is not
   strong-named, so its identity on the wire is unchanged. Nothing else had to change; the binary formatter on
   Mono and on the kiosk's .NET Framework interoperate for these types.
+
+## Running a real kiosk in Windows Sandbox
+
+Windows Sandbox (Windows 11 Pro) gives an administrator Windows to run the kiosk stack in without touching this PC;
+it is discarded when closed. Everything mapped into it is a scratch copy. Scripts: `tests/clients/sandbox/`.
+
+1. Scratch copies (paths are the scripts' defaults): the Kiosk Engine and DeviceService from the served snapshot
+   (`admin export kop-v2-engine ...`, with a kiosk image's `data` folder) under `E:\temp\rb-engine2024`, a configured
+   `halservice` folder from a kiosk image, and in `E:\temp\rb-sandbox\tools` the Python embeddable package with
+   pyserial, coloredlogs and pywin32, com0com 2.2.2.0 (signed x64) and unredbox/HW-Emu-Python v2 (`hw-emu`).
+   `rb.ps1 export-ca`, then copy `certs\ca.cer` to the control folder.
+2. `python tests\clients\sandbox\relay.py`: the backend's ports are published on 127.0.0.1, so this relays them from
+   the Hyper-V Default Switch address (what the sandbox sees as this PC), not from the LAN.
+3. `tests\clients\sandbox\make-wsb.ps1 -Start` writes the `.wsb` and starts the sandbox; its logon script
+   (`loop.ps1`) runs whatever the host drops into the control folder. Then, in order, with
+   `run-sandbox-step.ps1 -Script steps\<n>.ps1`:
+   `10-com0com` (COM1<->COM10, COM3<->COM13; Windows asks once to install the driver), `20-hw-emu`,
+   `30-halsvc` (the real HAL as a service; allows the v4 runtime, see above), `40-kiosk-network` (hosts, CA, engine
+   registry values) and `50-engine`.
+   Put the kiosk data's store ID in the control folder's `store-id.txt` first.
+4. Send Reserve3 / Cancel from the dashboard's Reservation broker page to that store ID.
+
+To run the engine on this PC instead (it writes `HKLM\SOFTWARE\WOW6432Node\Redbox\REDS\Kiosk Engine`), give your
+account write access to that key once from an elevated PowerShell, back it up first, then use
+`tests\clients\engine-registry.ps1 -Apply` / `-Clean`: `-Clean` removes exactly what `-Apply` added and what the engine
+wrote there afterwards (checked: the key ended identical to the backup). To take the access away again (elevated):
+`$k='HKLM:\SOFTWARE\WOW6432Node\Redbox'; $a=Get-Acl $k; $a.Access | ? { $_.IdentityReference -eq "$env:USERDOMAIN\$env:USERNAME" } | % { [void]$a.RemoveAccessRule($_) }; Set-Acl $k $a`.
+On this PC the engine got as far as the rental bundle and stopped in maintenance mode without HAL; HAL itself
+needs administrator rights and the hardware, which is why the sandbox is used.
 
 ## Admin dashboard
 
@@ -354,7 +383,8 @@ Endpoint-by-endpoint status, behaviour and inferences are in `docs/cloud-apis.md
   CancelReservation, so the dashboard refuses Cancel for kiosks that register without `"CancelReservation": true`.
 - Calls into a kiosk never hang. While GenuineChannels reports a kiosk's connection broken (it is re-establishing
   it), Reserve3 / CancelReservation / Ping are refused at once with 503 and the dashboard shows the kiosk as
-  **lost** (time and reason). Every call is also bounded (`BROKER_CALL_TIMEOUT`, default 30 s;
+  **lost** (time and reason). Every call is also bounded (`BROKER_CALL_TIMEOUT`, default 90 s, because a real engine queues the call on its
+  UI thread and took 30 s right after start-up;
   `BROKER_PING_TIMEOUT`, 10 s): a kiosk that does not answer in time gets 504 and shows as **not answering** until
   a later call succeeds (it stays registered, since its connection may be fine). Without this a call to a kiosk
   whose connection had just died waited for GenuineChannels' 120 s InvocationTimeout.
@@ -463,21 +493,32 @@ What was run (all containers built and running under WSLC 3.0.3; `rb.ps1 test` =
   rb-remoting` and took the next Reserve3. Cancel is refused by the dashboard with a 409 (the 1.7 interface has no
   CancelReservation). Dead connections, with the same client: killing the kiosk process made the next Reserve3
   return 503 ("lost its broker connection ... Connection reset by peer") in under 3 s instead of hanging; a
-  Reserve3 the kiosk held for 45 s (`HARNESS_RESERVE_DELAY`) returned 504 after 30 s, the kiosk showed as "not
+  Reserve3 the kiosk held for 45 s (`HARNESS_RESERVE_DELAY`) returned 504 after 30 s (the limit then), the kiosk showed as "not
   answering", and the next Reserve3 succeeded and cleared it. The 2016 harnesses run as an x86 exe built into the engine's `bin\`: the binary formatter
   binds `KioskShared` from the application base, as it does in `kioskengine.exe`.
-- **Full kiosk engine with the legacy broker: not reached.** An elevated retry was requested but has not run:
-  the session was not elevated (`IsInRole(Administrator)` was False), so nothing was written under HKLM. The real 1.88 `kioskengine.exe` (a scratch copy of
-  the served kop-v2-engine with the image's `data` folder, hosts rewritten to localhost) starts, loads its
-  kernel extensions (BrokerServices, HardwareServices, UpdateServices) and its five data config files, finds no
-  Kiosk Client Service on :9001 and falls back to static configuration, then exits in `EngineApplication.Initialize`:
-  `SchedulerService.SaveEntries` writes `HKLM\SOFTWARE\Redbox\REDS\Kiosk Engine\Core` (access denied without
-  administrator rights). The rental bundle, which calls `RegisterWithBrokerService`, never loads. Also needed on an
-  elevated run: `BrokerServicesURL`/`KioskServicesURL` under `...\Kiosk Engine\Remote Services\...` (or hosts
-  entries for blt/bl2.accessredbox.net), the Store `ID`, a HAL service (or the HAL simulator) and the Device Service
-  (the simulator registry values are already set on this PC), and the Kiosk Client Service. So a dashboard
-  Reserve3 has reached the real 1.88 and 2016 broker proxies, but not the real rental code
-  (`ReservationFunctions.CreateReservationCallback`).
+- **Full kiosk engine with the legacy broker, in Windows Sandbox: a dashboard Reserve3 reached the real rental code.**
+  See "Running a real kiosk in Windows Sandbox" below for the setup. The real 1.88 `kioskengine.exe` (the served
+  kop-v2-engine with a kiosk image's `data` folder), the image's configured HAL 1.13.0.27 as a Windows service, and
+  unredbox/HW-Emu-Python v2 emulating the control boards (COM1) and the Arcus motion controller (COM3) over com0com
+  pairs, pointed at this backend as a kiosk is (hosts entries, the CA trusted, the engine's registry values from a
+  real kiosk's export):
+  - HAL init ran against the emulated boards (reset, homing, picker check; no camera, and MOVEVEND reported
+    ARCUSNOTRESPONSIVE) and finished `ERRORED`, which the rental bundle accepts; `hardware-status` returned OK; the
+    rental application started and `ReservationFunctions.RegisterWithBrokerService` registered the image's store ID with the
+    Mono broker (real pricing policy in the version JSON). After restarts of rb-remoting it registered again by
+    itself within seconds.
+  - Reserve3 from the dashboard went through `BrokerServicesProxy` to `ReservationFunctions.CreateReservationCallback`
+    / `CreateReservation`, which searched the kiosk's inventory: titles it does not stock came back `empty`; title
+    317846 got barcode 687867553 held (`ReservationSucceeded: true`), and the dashboard's Cancel ran the kiosk's
+    `ReservationFunctions:CancelReservation` ("removed reservation"); `cloud_reservations` went reserved ->
+    cancelled.
+  - Not real / not covered: HAL runs on the .NET 4 runtime (a `supportedRuntime` line in the scratch copy's
+    `halsvc-win32.exe.config`; the sandbox cannot have .NET 3.5); the boards are emulated; no camera; the card
+    reader is the engine's own simulator (`Device Service Simulator` registry values; no Device Service process),
+    with which the kiosk reaches the start view in service; no customer session was run; no Kiosk Client Service on
+    :9001 (the engine falls back to static configuration; its KCS calls such as `api/transaction/CancelReservation`
+    fail). Engine bugs seen on the way (a key press with the simulated reader ends the engine) are in
+    `docs/engine-known-issues.md`.
 - **Not verified**: the real Update Client and Device Service against the backend (both need the CA trusted
   and/or a kiosk id under `WOW6432Node`, i.e. administrator rights; `tests/clients/run-ucs.ps1` is ready for an
   elevated run), and a whole physical kiosk.
