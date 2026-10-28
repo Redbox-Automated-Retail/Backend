@@ -8,6 +8,9 @@ Update Service (legacy updatemgrd):
   editions                           list imported editions
   pin <repo> <hash|label|latest>     serve an older revision (fresh kiosks get its snapshot; nobody is moved back)
   snapshot <repo>|--all              rebuild the full-file seed snapshot of a repository head
+  export <repo>... [--revision HASH|LABEL] [--edition NAME] > files.tar
+                                     a repository's files at a revision (default: the served head) as a tar on
+                                     stdout, paths relative to the drive root (to run kiosk programs off-kiosk)
   publish <repo> <dir> --target-path 'C:\\Program Files\\...' [--label L]
                                      add a revision from a local directory (deltas via xdelta3)
   repos                              list repositories and heads
@@ -125,6 +128,28 @@ async def cmd_snapshot(args):
     for n in names:
         res = await repo.build_snapshot(n)
         print(json.dumps({k: v for k, v in res.items() if k != "problems"} | {"problems": res["problems"][:10]}))
+
+
+async def cmd_export(args):
+    import tarfile
+    out = tarfile.open(fileobj=sys.stdout.buffer, mode="w|")
+    for name in args.repo:
+        upto = None
+        if args.revision:
+            upto = await db.fetchval("SELECT hash FROM upd_revisions WHERE repo = %s AND (hash ILIKE %s OR label = %s)"
+                                     " ORDER BY seq DESC LIMIT 1", name, args.revision + "%", args.revision)
+            if not upto:
+                sys.exit(f"{name}: no revision {args.revision}")
+        elif not args.edition:
+            upto = await repo.served_head(name)
+        files, head, problems = await repo.reconstruct_head(name, upto_hash=upto, edition=args.edition)
+        for (tpath, tname), (_, key) in sorted(files.items()):
+            member = tarfile.TarInfo((tpath.replace("\\", "/").split(":/", 1)[-1] + "/" + tname).lstrip("/"))
+            member.size = blobs.size(key)
+            with open(blobs.path(key), "rb") as f:
+                out.addfile(member, f)
+        print(f"{name} @ {head}: {len(files)} files" + (f", problems: {problems[:5]}" if problems else ""), file=sys.stderr)
+    out.close()
 
 
 async def cmd_publish(args):
@@ -272,6 +297,8 @@ def parser():
     p.set_defaults(fn=import_store)
     p = sub.add_parser("snapshot"); p.add_argument("repo", nargs="?"); p.add_argument("--all", action="store_true")
     p.set_defaults(fn=cmd_snapshot)
+    p = sub.add_parser("export"); p.add_argument("repo", nargs="+"); p.add_argument("--revision"); p.add_argument("--edition")
+    p.set_defaults(fn=cmd_export)
     p = sub.add_parser("publish"); p.add_argument("repo"); p.add_argument("dir"); p.add_argument("--target-path", required=True)
     p.add_argument("--label"); p.add_argument("--no-deltas", action="store_true"); p.set_defaults(fn=cmd_publish)
     sub.add_parser("repos").set_defaults(fn=cmd_repos)
