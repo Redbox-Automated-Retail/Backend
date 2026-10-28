@@ -33,6 +33,7 @@ OPTIONAL_ROUTERS = [
     "redbox_backend.cloudapi.routers.bluefin",
     "redbox_backend.cloudapi.routers.fraud",
     "redbox_backend.cloudapi.routers.tickets",
+    "redbox_backend.cloudapi.routers.remoting",
 ]
 
 

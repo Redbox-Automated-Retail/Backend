@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import base64
 import datetime as dt
+import hashlib
 import json
 import logging
 import os
@@ -516,6 +517,132 @@ async def repo_pin(name: str, body: dict):
     res = await repo.build_snapshot(name, rev)
     await db.record_event(None, "dashboard", "pin", {"repo": name, "revision": rev, "snapshot_files": res["files"]})
     return ok({k: v for k, v in res.items() if k != "problems"} | {"problems": res["problems"][:20]})
+
+
+# ------------------------------------------------------------------------ reservation broker (legacy)
+
+REMOTING_CONTROL_URL = os.environ.get("REMOTING_CONTROL_URL", "http://rb-remoting:8091")
+
+
+async def remoting(path, body=None, method="POST", timeout=150):
+    def call():
+        data = None if body is None else json.dumps(body, default=str).encode()
+        req = urllib.request.Request(REMOTING_CONTROL_URL + path, data=data, method=method,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read() or b"null")
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode(errors="replace")
+            try:
+                detail = json.loads(detail).get("error", detail)
+            except Exception:
+                pass
+            raise HTTPException(e.code if e.code != 500 else 502, f"broker: {detail}")
+        except Exception as e:
+            raise HTTPException(502, f"remoting host unreachable: {e}")
+    return await asyncio.to_thread(call)
+
+
+def _net_date(value):
+    """JavaScriptSerializer's DateTime format, which the Mono host deserializes into ReservationCart3.ReserveDate."""
+    return f"/Date({int(value.timestamp() * 1000)})/"
+
+
+@app.get("/api/broker")
+async def broker():
+    try:
+        live = {k["kioskId"]: k for k in await remoting("/broker/kiosks", method="GET", timeout=5)}
+    except HTTPException:
+        live = None
+    rows = await db.fetch("SELECT * FROM broker_kiosks ORDER BY kiosk_id")
+    for r in rows:
+        r["live"] = None if live is None else r["kiosk_id"] in live
+    return ok({"reachable": live is not None, "kiosks": rows,
+               "requests": await db.fetch("SELECT * FROM broker_requests ORDER BY id DESC LIMIT 50")})
+
+
+async def _broker_record(kiosk_id, kind, ref, request, result, success, error):
+    await db.execute("INSERT INTO broker_requests (kiosk_id, kind, reference_number, request, result, success, error)"
+                     " VALUES (%s,%s,%s,%s,%s,%s,%s)", kiosk_id, kind, ref, db.jsonb(request), db.jsonb(result),
+                     success, error)
+    await db.record_event(kiosk_id, "broker", kind, {"reference": ref, "success": success, "error": error})
+
+
+@app.post("/api/broker/reserve")
+async def broker_reserve(body: dict):
+    """Online reservation pushed to a kiosk: the broker calls Reserve3 on it and the kiosk holds the discs.
+
+    The reservation is stored in cloud_reservations (shared with the Transaction API), so the kiosk's later
+    ValidatePickup / PickupAuthorize / ReservationPickup calls find it.
+    """
+    kiosk_id = int(body["kiosk_id"])
+    titles = body.get("titles") or []
+    if not titles:
+        raise HTTPException(400, "at least one title")
+    ref = int(await db.fetchval("SELECT nextval('cloud_reference_seq')"))
+    now = dt.datetime.now(dt.timezone.utc)
+    items, subtotal = [], 0.0
+    for i, t in enumerate(titles, 1):
+        price = float(t.get("price") or 1.99)
+        subtotal += price
+        items.append({"ItemID": i, "TitleID": int(t["title_id"]), "ReservationType": 2 if t.get("type") == "purchase" else 1,
+                      "Price": price, "Discount": 0, "DiscountType": 0, "DiscountedPrice": price, "NumberOfCredits": 0,
+                      "LoyaltyPoints": 0})
+    tax_rate = float(body.get("tax_rate") or 0)
+    tax = round(subtotal * tax_rate / 100, 2)
+    last4 = str(body.get("last4") or "")[-4:]
+    card_hash = body.get("card_hash") or hashlib.sha1(f"{body.get('email')}|{last4}".encode()).hexdigest().upper()
+    cart = {"KioskID": kiosk_id, "ReferenceNumber": ref, "CardID": card_hash, "IsGc": False, "GcIds": [], "CcIds": [],
+            "Email": body.get("email"), "ReserveDate": _net_date(now), "Titles": items, "DiscountedSubTotal": subtotal,
+            "SubTotal": subtotal, "Tax": tax, "GrandTotal": round(subtotal + tax, 2), "HiveOnlinePromotionDiscount": 0,
+            "NumberOfCreditsRemaining": 0, "PromoCode": body.get("promo_code"), "CustomerNumber": body.get("customer_number"),
+            "AppliedCredit": False, "AppliedHiveOnlinePromotion": False, "AppliedTitleMarketing": False,
+            "HistoryTitleIDs": [], "TaxRate": tax_rate, "Zip": body.get("zip"), "IsMnp": False, "IsMdv": False,
+            "LoyaltyRedemption": False, "DefaultServiceFeeAmount": 0, "ActualServiceFeeAmount": 0,
+            "AuthorizeAtPickup": bool(body.get("authorize_at_pickup", True)),
+            "ReservationCardHash": {"CardBinHash": card_hash, "Last4": last4}, "AlternateCardHashes": []}
+    try:
+        result = await remoting("/broker/reserve", {"kioskId": kiosk_id, "cart": cart})
+    except HTTPException as e:
+        await _broker_record(kiosk_id, "reserve", ref, cart, None, False, e.detail)
+        raise
+    success = bool(result.get("ReservationSucceeded"))
+    reserved = {r.get("ItemID"): r for r in result.get("TitleResults") or []}
+    stored_items = [dict(it, ReservedBarcode=(reserved.get(it["ItemID"]) or {}).get("ReservedBarcode"),
+                         Reservable=(reserved.get(it["ItemID"]) or {}).get("Reservable")) for it in items]
+    if success:
+        customer = await db.fetchval("SELECT customer_id FROM cloud_customers WHERE lower(email) = lower(%s)",
+                                     body.get("email")) if body.get("email") else None
+        await db.execute("INSERT INTO cloud_reservations (reference_number, kiosk_id, customer_id, card_key, status,"
+                         " authorize_at_pickup, items, expires_at) VALUES (%s,%s,%s,%s,'reserved',%s,%s, now() + interval"
+                         " '1 day')", ref, kiosk_id, customer, card_hash, cart["AuthorizeAtPickup"], db.jsonb(stored_items))
+    await _broker_record(kiosk_id, "reserve", ref, cart, result, success, result.get("ErrorMessage"))
+    return ok({"reference_number": ref, "result": result})
+
+
+@app.post("/api/broker/cancel")
+async def broker_cancel(body: dict):
+    kiosk_id, ref = int(body["kiosk_id"]), int(body["reference_number"])
+    try:
+        result = await remoting("/broker/cancel", {"kioskId": kiosk_id, "referenceNumber": ref})
+    except HTTPException as e:
+        await _broker_record(kiosk_id, "cancel", ref, body, None, False, e.detail)
+        raise
+    success = bool(result.get("CancellationSucceeded"))
+    if success:
+        await db.execute("UPDATE cloud_reservations SET status='cancelled', reason_code='broker', updated_at=now()"
+                         " WHERE reference_number=%s AND status='reserved'", ref)
+    await _broker_record(kiosk_id, "cancel", ref, body, result, success, result.get("ErrorMessage"))
+    return ok({"result": result})
+
+
+@app.post("/api/broker/ping")
+async def broker_ping(body: dict):
+    kiosk_id = int(body["kiosk_id"])
+    result = await remoting("/broker/ping", {"kioskId": kiosk_id}, timeout=40)
+    await _broker_record(kiosk_id, "ping", None, None, result, True, None)
+    return ok(result)
 
 
 # ----------------------------------------------------------------------------------------- packages

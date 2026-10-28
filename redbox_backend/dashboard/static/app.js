@@ -415,6 +415,57 @@ async function repoDialog(r) {
   });
 }
 
+// ----------------------------------------------------------------------------- reservation broker
+routes.broker = async () => {
+  title("Reservation broker");
+  const d = await api("/broker");
+  const live = d.kiosks.filter((k) => k.live);
+  view().innerHTML = `<p class="muted">Kiosks with <code>UseLegacyBrokerService</code> register with the legacy broker
+    (<code>gtcp://...:7890/RegistrationBroker/Default.rem</code>, hosted on Mono in rb-remoting) and stay connected; the broker then
+    calls back into them. A reservation sent here makes the kiosk hold discs (Reserve3) and is stored like any other reservation,
+    so the kiosk's pickup goes through the Transaction API. ${d.reachable ? "" : '<b class="error">rb-remoting is not reachable.</b>'}</p>
+    <h3>Kiosks</h3>${table(d.kiosks, [{ key: "kiosk_id", label: "Kiosk", render: (v) => `<a href="#/kiosk/${esc(v)}">${esc(v)}</a>` },
+      { key: "live", label: "Connected", render: (v) => v === null ? pill("unknown", "warn") : v ? pill("connected", "ok") : pill("not connected", "bad") },
+      { key: "registered_at", label: "Registered" }, { key: "registrations", label: "Registrations" },
+      { key: "version", label: "Version / pricing", wrap: true, render: (v) => v ? `<code>${esc(JSON.stringify(v).slice(0, 220))}</code>` : "" },
+      { key: "disconnected_at", label: "Disconnected" }], { empty: "No kiosk has registered with the broker." })}
+    <div class="grid2 mt">
+      <form id="rf" class="card"><b>Send a reservation to a kiosk</b>
+        <label>Kiosk <select name="kiosk_id">${live.map((k) => `<option>${esc(k.kiosk_id)}</option>`).join("")}</select></label>
+        <label>Customer e-mail <input name="email" type="email" required></label>
+        <label>Card last four <input name="last4" maxlength="4"></label>
+        <label>Titles (one per line: title id, optional price, optional "purchase") <textarea name="titles" required placeholder="1234 1.99&#10;5678 2.99"></textarea></label>
+        <label><input type="checkbox" name="authorize_at_pickup" checked> authorize at pickup</label>
+        <button class="primary" ${live.length ? "" : "disabled"}>Reserve</button><pre id="ro" class="mt hidden"></pre></form>
+      <form id="cf" class="card"><b>Cancel a reservation on a kiosk</b>
+        <label>Kiosk <select name="kiosk_id">${live.map((k) => `<option>${esc(k.kiosk_id)}</option>`).join("")}</select></label>
+        <label>Reference number <input name="reference_number" required></label>
+        <div class="toolbar"><button class="primary" ${live.length ? "" : "disabled"}>Cancel reservation</button><button type="button" id="pg" ${live.length ? "" : "disabled"}>Ping kiosk</button></div>
+        <pre id="co" class="mt hidden"></pre></form>
+    </div>
+    <h3>Broker calls</h3>${table(d.requests, [{ key: "created_at", label: "Time" }, { key: "kiosk_id", label: "Kiosk" }, { key: "kind" },
+      { key: "reference_number", label: "Reference" }, { key: "success", render: (v) => v ? pill("ok", "ok") : pill("failed", "bad") },
+      { key: "result", wrap: true, render: (v) => v ? `<code>${esc(JSON.stringify(v).slice(0, 300))}</code>` : "" }, { key: "error", wrap: true }])}`;
+  $("#rf").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const titles = String(f.get("titles")).split(/\n+/).map((l) => l.trim()).filter(Boolean).map((l) => {
+      const p = l.split(/[\s,;]+/);
+      return { title_id: +p[0], price: p[1] && !isNaN(+p[1]) ? +p[1] : undefined, type: /purchase/i.test(l) ? "purchase" : "rental" };
+    });
+    const r = await act(() => api("/broker/reserve", { body: { kiosk_id: f.get("kiosk_id"), email: f.get("email"), last4: f.get("last4"),
+      titles, authorize_at_pickup: !!f.get("authorize_at_pickup") } }), (x) => `Reservation ${x.reference_number}: ${x.result.ReservationSucceeded ? "reserved" : "failed"}`);
+    $("#ro").classList.remove("hidden"); $("#ro").textContent = JSON.stringify(r, null, 2);
+  });
+  $("#cf").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.target));
+    const r = await act(() => api("/broker/cancel", { body: f }), (x) => x.result.CancellationSucceeded ? "Cancelled" : "Not cancelled");
+    $("#co").classList.remove("hidden"); $("#co").textContent = JSON.stringify(r, null, 2);
+  });
+  $("#pg").onclick = () => act(() => api("/broker/ping", { body: { kiosk_id: $("#cf").kiosk_id.value } }), "Kiosk answered the ping");
+};
+
 // -------------------------------------------------------------------------------- update packages
 routes.packages = async () => {
   title("Update packages");
@@ -628,7 +679,7 @@ routes.logs = async () => {
     const got = await api("/events?" + p);
     rows = more ? rows.concat(got) : got;
     $("#lt").innerHTML = table(rows, [{ key: "id" }, { key: "created_at", label: "Time" }, { key: "kiosk_id", label: "Kiosk" }, { key: "source" }, { key: "kind" },
-      { key: "payload", label: "Payload", wrap: true, render: (v) => v ? `<code>${esc(JSON.stringify(v)).slice(0, 300)}</code>` : "" }], { onclick: true }) +
+      { key: "payload", label: "Payload", wrap: true, render: (v) => v ? `<code>${esc(JSON.stringify(v).slice(0, 300))}</code>` : "" }], { onclick: true }) +
       (got.length === 200 ? '<button id="more" class="mt">Older</button>' : "");
     bindRows($("#lt"), rows, (r) => { const m = modal(`<h3>${esc(r.source)} / ${esc(r.kind)}</h3><p class="muted">${esc(fmtDate(r.created_at))}, kiosk ${esc(r.kiosk_id ?? "-")}</p><pre>${esc(JSON.stringify(r.payload, null, 2))}</pre><button id="cl" class="mt">Close</button>`); $("#cl", m).onclick = closeModal; });
     if ($("#more")) $("#more").onclick = () => load(true);
