@@ -98,6 +98,14 @@ namespace Redbox.SelfHosted.Remoting
         public DateTime RegisteredUtc;
         public string Host;
         public HostInformation HostInformation;
+        /// <summary>Set when GenuineChannels reports the connection broken (it then tries to re-establish it);
+        /// calls are refused until the kiosk is connected again instead of hanging until InvocationTimeout.</summary>
+        public DateTime? LostUtc;
+        public string LostReason;
+        /// <summary>Set when a call was not answered in time (the connection may still look alive); cleared by the
+        /// next answered call. Calls are still made, each bounded by the timeout.</summary>
+        public DateTime? NoAnswerUtc;
+        public string NoAnswerReason;
     }
 
     /// <summary>The broker object kiosks obtain with Activator.GetObject(typeof(IKioskRegister), url).</summary>
@@ -132,10 +140,45 @@ namespace Redbox.SelfHosted.Remoting
             return Kiosks.ContainsKey(kioskID);
         }
 
+        IEnumerable<KioskEntry> On(HostInformation host)
+        {
+            return Kiosks.Values.Where(k => k.HostInformation != null && (ReferenceEquals(k.HostInformation, host)
+                                                                          || k.HostInformation.Uri == host.Uri)).ToList();
+        }
+
+        internal void Lost(HostInformation host, string reason)
+        {
+            foreach (var e in On(host))
+                if (e.LostUtc == null)
+                {
+                    e.LostUtc = DateTime.UtcNow;
+                    e.LostReason = reason;
+                    Log.Info("kiosk {0} connection lost ({1})", e.KioskId, reason);
+                }
+        }
+
+        internal void Restored(HostInformation host)
+        {
+            foreach (var e in On(host))
+                if (e.LostUtc != null)
+                {
+                    e.LostUtc = null;
+                    Log.Info("kiosk {0} connection re-established", e.KioskId);
+                }
+        }
+
+        /// <summary>The kiosk did not answer a call in time. It stays registered (its connection may be fine and it
+        /// would not register again), and the dashboard shows it as not answering until a call succeeds.</summary>
+        internal void Unresponsive(KioskEntry e, string reason)
+        {
+            e.NoAnswerUtc = DateTime.UtcNow;
+            e.NoAnswerReason = reason;
+            Log.Info("kiosk {0} not answering: {1}", e.KioskId, reason);
+        }
+
         internal void Dropped(HostInformation host, string reason)
         {
-            foreach (var e in Kiosks.Values.Where(k => k.HostInformation != null && (ReferenceEquals(k.HostInformation, host)
-                         || k.HostInformation.Uri == host.Uri)).ToList())
+            foreach (var e in On(host))
             {
                 KioskEntry removed;
                 if (Kiosks.TryRemove(e.KioskId, out removed))
@@ -198,6 +241,11 @@ namespace Redbox.SelfHosted.Remoting
                 status = 404;
                 result = new Dictionary<string, object> { { "error", e.Message } };
             }
+            catch (BrokerCallException e)
+            {
+                status = e.Status;
+                result = new Dictionary<string, object> { { "error", e.Message }, { "state", e.State } };
+            }
             catch (Exception e)
             {
                 status = 500;
@@ -218,7 +266,37 @@ namespace Redbox.SelfHosted.Remoting
             KioskEntry e;
             if (!KioskRegisterService.Instance.Kiosks.TryGetValue(id, out e))
                 throw new KeyNotFoundException("kiosk " + id + " is not connected to the broker");
+            if (e.LostUtc != null)
+                throw new BrokerCallException(503, "connection_lost", "kiosk " + id + " lost its broker connection at " +
+                    e.LostUtc.Value.ToString("u") + " (" + e.LostReason + "); waiting for it to reconnect");
             return e;
+        }
+
+        static readonly int CallTimeout = Program.EnvInt("BROKER_CALL_TIMEOUT", 30), PingTimeout = Program.EnvInt("BROKER_PING_TIMEOUT", 10);
+
+        /// <summary>A call into the kiosk, bounded: GenuineChannels would otherwise wait InvocationTimeout (120 s) on a
+        /// connection that died without being noticed. A kiosk that does not answer in time is flagged (NoAnswerUtc).</summary>
+        static T Call<T>(KioskEntry entry, string what, int seconds, Func<T> call)
+        {
+            T result = default(T);
+            Exception error = null;
+            var done = new ManualResetEvent(false);
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try { result = call(); } catch (Exception e) { error = e; }
+                done.Set();
+            });
+            if (!done.WaitOne(TimeSpan.FromSeconds(seconds)))
+            {
+                string reason = what + " not answered within " + seconds + " s";
+                KioskRegisterService.Instance.Unresponsive(entry, reason);
+                throw new BrokerCallException(504, "no_answer", "kiosk " + entry.KioskId + ": " + reason +
+                    "; the call may still complete on the kiosk");
+            }
+            if (error != null) throw error;
+            entry.NoAnswerUtc = null;
+            entry.NoAnswerReason = null;
+            return result;
         }
 
         static object Dispatch(string method, string path, Dictionary<string, object> args, out int status)
@@ -228,13 +306,16 @@ namespace Redbox.SelfHosted.Remoting
                 return KioskRegisterService.Instance.Kiosks.Values.OrderBy(k => k.KioskId).Select(k => new Dictionary<string, object>
                 {
                     { "kioskId", k.KioskId }, { "version", k.Version }, { "host", k.Host },
-                    { "registeredUtc", k.RegisteredUtc.ToString("o") }
+                    { "registeredUtc", k.RegisteredUtc.ToString("o") },
+                    { "lostUtc", k.LostUtc == null ? null : k.LostUtc.Value.ToString("o") }, { "lostReason", k.LostReason },
+                    { "noAnswerUtc", k.NoAnswerUtc == null ? null : k.NoAnswerUtc.Value.ToString("o") }, { "noAnswerReason", k.NoAnswerReason }
                 }).ToList();
             if (method == "GET" && path == "/health")
                 return new Dictionary<string, object> { { "ok", true }, { "kiosks", KioskRegisterService.Instance.Kiosks.Count } };
             if (method == "POST" && path == "/broker/ping")
             {
-                Kiosk(args).Kiosk.Ping();
+                var entry = Kiosk(args);
+                Call(entry, "Ping", PingTimeout, () => { entry.Kiosk.Ping(); return true; });
                 return new Dictionary<string, object> { { "ok", true } };
             }
             if (method == "POST" && path == "/broker/reserve")
@@ -244,23 +325,29 @@ namespace Redbox.SelfHosted.Remoting
                 cart.KioskID = entry.KioskId;
                 Log.Info("Reserve3 -> kiosk {0}, reference {1}, {2} titles", entry.KioskId, cart.ReferenceNumber,
                          cart.Titles == null ? 0 : cart.Titles.Count);
-                var r = entry.Kiosk.Reserve3(cart);
-                return r;
+                return Call(entry, "Reserve3", CallTimeout, () => entry.Kiosk.Reserve3(cart));
             }
             if (method == "POST" && path == "/broker/cancel")
             {
                 var entry = Kiosk(args);
-                var r = entry.Kiosk.CancelReservation(Convert.ToInt64(args["referenceNumber"]));
-                return r;
+                long reference = Convert.ToInt64(args["referenceNumber"]);
+                return Call(entry, "CancelReservation", CallTimeout, () => entry.Kiosk.CancelReservation(reference));
             }
             status = 404;
             return new Dictionary<string, object> { { "error", "not found" } };
         }
     }
 
+    internal class BrokerCallException : Exception
+    {
+        public readonly int Status;
+        public readonly string State;
+        public BrokerCallException(int status, string state, string message) : base(message) { Status = status; State = state; }
+    }
+
     public static class Program
     {
-        static int EnvInt(string name, int fallback)
+        internal static int EnvInt(string name, int fallback)
         {
             int v;
             return int.TryParse(Environment.GetEnvironmentVariable(name), out v) ? v : fallback;
@@ -285,9 +372,14 @@ namespace Redbox.SelfHosted.Remoting
             {
                 Log.Info("GenuineChannels event {0} {1} {2}", e.EventType, e.HostInformation,
                          e.SourceException == null ? "" : e.SourceException.Message);
-                if (e.HostInformation != null && (e.EventType == GenuineEventType.GeneralConnectionClosed ||
-                                                  e.EventType == GenuineEventType.HostResourcesReleased))
+                if (e.HostInformation == null) return;
+                if (e.EventType == GenuineEventType.GeneralConnectionClosed || e.EventType == GenuineEventType.HostResourcesReleased)
                     KioskRegisterService.Instance.Dropped(e.HostInformation, e.EventType.ToString());
+                else if (e.EventType == GenuineEventType.GeneralConnectionReestablishing)
+                    KioskRegisterService.Instance.Lost(e.HostInformation,
+                        e.SourceException == null ? e.EventType.ToString() : e.SourceException.Message);
+                else if (e.EventType == GenuineEventType.GeneralConnectionEstablished)
+                    KioskRegisterService.Instance.Restored(e.HostInformation);
             };
             Log.Info("broker on gtcp://0.0.0.0:{0}/RegistrationBroker/Default.rem", brokerPort);
 

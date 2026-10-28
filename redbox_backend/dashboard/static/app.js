@@ -419,13 +419,15 @@ async function repoDialog(r) {
 routes.broker = async () => {
   title("Reservation broker");
   const d = await api("/broker");
-  const live = d.kiosks.filter((k) => k.live);
+  const live = d.kiosks.filter((k) => k.connection === "connected" || k.connection === "not answering");
   view().innerHTML = `<p class="muted">Kiosks with <code>UseLegacyBrokerService</code> register with the legacy broker
     (<code>gtcp://...:7890/RegistrationBroker/Default.rem</code>, hosted on Mono in rb-remoting) and stay connected; the broker then
     calls back into them. A reservation sent here makes the kiosk hold discs (Reserve3) and is stored like any other reservation,
     so the kiosk's pickup goes through the Transaction API. ${d.reachable ? "" : '<b class="error">rb-remoting is not reachable.</b>'}</p>
     <h3>Kiosks</h3>${table(d.kiosks, [{ key: "kiosk_id", label: "Kiosk", render: (v) => `<a href="#/kiosk/${esc(v)}">${esc(v)}</a>` },
-      { key: "live", label: "Connected", render: (v) => v === null ? pill("unknown", "warn") : v ? pill("connected", "ok") : pill("not connected", "bad") },
+      { key: "connection", label: "Connection", render: (v, r) => v === "connected" ? pill("connected", "ok")
+          : v === "lost" || v === "not answering" ? `${pill(v, "warn")} <span class="muted">${esc(fmtDate(r.lost_at))} ${esc(r.lost_reason || "")}</span>`
+          : v === "unknown" ? pill("unknown", "warn") : pill("not connected", "bad") },
       { key: "registered_at", label: "Registered" }, { key: "registrations", label: "Registrations" },
       { key: "version", label: "Version / pricing", wrap: true, render: (v) => v ? `<code>${esc(JSON.stringify(v).slice(0, 220))}</code>` : "" },
       { key: "disconnected_at", label: "Disconnected" }], { empty: "No kiosk has registered with the broker." })}

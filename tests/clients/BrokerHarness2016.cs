@@ -17,6 +17,7 @@ using Redbox.Core;
 public static class BrokerHarness2016
 {
     static Assembly broker;
+    static int held;
     const BindingFlags All = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
 
     static Type T(string name)
@@ -94,6 +95,13 @@ public static class BrokerHarness2016
     {
         long reference = (long)a[2];
         var titles = (IEnumerable)a[18];
+        int delay;  // HARNESS_RESERVE_DELAY=<s>: the first Reserve3 is held that long (server timeout test)
+        if (Interlocked.Exchange(ref held, 1) == 0 &&
+            int.TryParse(Environment.GetEnvironmentVariable("HARNESS_RESERVE_DELAY"), out delay) && delay > 0)
+        {
+            Console.WriteLine("EVENT reserve-held ref=" + reference + " for " + delay + " s");
+            Thread.Sleep(delay * 1000);
+        }
         Console.WriteLine("EVENT reserve ref=" + reference + " email=" + a[1] + " card=" + a[0] + " grandTotal=" + a[10] +
                           " reserveDate=" + ((DateTime)a[3]).ToString("o") + " titles=" + titles.Cast<object>().Count());
         var result = Activator.CreateInstance(T("Redbox.BrokerServices.Proxy.LocalReservationResult"), true);

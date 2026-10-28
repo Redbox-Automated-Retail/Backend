@@ -557,7 +557,13 @@ async def broker():
         live = None
     rows = await db.fetch("SELECT * FROM broker_kiosks ORDER BY kiosk_id")
     for r in rows:
-        r["live"] = None if live is None else r["kiosk_id"] in live
+        k = None if live is None else live.get(r["kiosk_id"])
+        r["live"] = None if live is None else k is not None
+        # connected / lost (GenuineChannels is re-establishing it; calls are refused at once) / not answering (a call
+        # timed out; calls are still made, each bounded) / not connected / unknown (rb-remoting unreachable)
+        r["connection"] = "unknown" if live is None else "not connected" if k is None else             "lost" if k.get("lostUtc") else "not answering" if k.get("noAnswerUtc") else "connected"
+        k = k or {}
+        r["lost_at"], r["lost_reason"] = k.get("lostUtc") or k.get("noAnswerUtc"), k.get("lostReason") or k.get("noAnswerReason")
     return ok({"reachable": live is not None, "kiosks": rows,
                "requests": await db.fetch("SELECT * FROM broker_requests ORDER BY id DESC LIMIT 50")})
 
@@ -648,7 +654,11 @@ async def broker_cancel(body: dict):
 @app.post("/api/broker/ping")
 async def broker_ping(body: dict):
     kiosk_id = int(body["kiosk_id"])
-    result = await remoting("/broker/ping", {"kioskId": kiosk_id}, timeout=40)
+    try:
+        result = await remoting("/broker/ping", {"kioskId": kiosk_id}, timeout=40)
+    except HTTPException as e:
+        await _broker_record(kiosk_id, "ping", None, None, None, False, e.detail)
+        raise
     await _broker_record(kiosk_id, "ping", None, None, result, True, None)
     return ok(result)
 

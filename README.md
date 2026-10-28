@@ -352,6 +352,12 @@ Endpoint-by-endpoint status, behaviour and inferences are in `docs/cloud-apis.md
   (BrokerRegister over IoT), for which the cloud->kiosk reservation push is still not known. The 2014-2016 engines
   (broker client 1.7, `Redbox.DVD.BrokerServices.dll`) always use it; their `IKioskOperations` has no
   CancelReservation, so the dashboard refuses Cancel for kiosks that register without `"CancelReservation": true`.
+- Calls into a kiosk never hang. While GenuineChannels reports a kiosk's connection broken (it is re-establishing
+  it), Reserve3 / CancelReservation / Ping are refused at once with 503 and the dashboard shows the kiosk as
+  **lost** (time and reason). Every call is also bounded (`BROKER_CALL_TIMEOUT`, default 30 s;
+  `BROKER_PING_TIMEOUT`, 10 s): a kiosk that does not answer in time gets 504 and shows as **not answering** until
+  a later call succeeds (it stays registered, since its connection may be fine). Without this a call to a kiosk
+  whose connection had just died waited for GenuineChannels' 120 s InvocationTimeout.
 - KioskServices MessageService, both transports (Remoting and REST), all 33 MessageTypes the 2014-2016, 1.80 and
   1.81 clients send. The handlers are in `cloudapi/kioskservices.py`; their status per message type is in
   `docs/cloud-apis.md`. Replies are written by `kioskservices.dumps`, which emits .NET date literals
@@ -455,9 +461,13 @@ What was run (all containers built and running under WSLC 3.0.3; `rb.ps1 test` =
   ILMerged in): registered with the Mono broker, answered Ping, received a dashboard Reserve3 (the newer
   ReservationCart3's extra fields were tolerated) and answered it, re-registered within ~5 s of `wslc restart
   rb-remoting` and took the next Reserve3. Cancel is refused by the dashboard with a 409 (the 1.7 interface has no
-  CancelReservation). The 2016 harnesses run as an x86 exe built into the engine's `bin\`: the binary formatter
+  CancelReservation). Dead connections, with the same client: killing the kiosk process made the next Reserve3
+  return 503 ("lost its broker connection ... Connection reset by peer") in under 3 s instead of hanging; a
+  Reserve3 the kiosk held for 45 s (`HARNESS_RESERVE_DELAY`) returned 504 after 30 s, the kiosk showed as "not
+  answering", and the next Reserve3 succeeded and cleared it. The 2016 harnesses run as an x86 exe built into the engine's `bin\`: the binary formatter
   binds `KioskShared` from the application base, as it does in `kioskengine.exe`.
-- **Full kiosk engine with the legacy broker: not reached.** The real 1.88 `kioskengine.exe` (a scratch copy of
+- **Full kiosk engine with the legacy broker: not reached.** An elevated retry was requested but has not run:
+  the session was not elevated (`IsInRole(Administrator)` was False), so nothing was written under HKLM. The real 1.88 `kioskengine.exe` (a scratch copy of
   the served kop-v2-engine with the image's `data` folder, hosts rewritten to localhost) starts, loads its
   kernel extensions (BrokerServices, HardwareServices, UpdateServices) and its five data config files, finds no
   Kiosk Client Service on :9001 and falls back to static configuration, then exits in `EngineApplication.Initialize`:

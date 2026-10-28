@@ -175,3 +175,6 @@ def test_dashboard_cancel_refused_for_engines_without_cancelreservation(c, admin
     assert r.status_code == 409 and "no CancelReservation" in r.json()["detail"]
     rows = c.sql("SELECT * FROM broker_requests WHERE kiosk_id = %s", kid)
     assert rows and rows[0]["kind"] == "cancel" and rows[0]["success"] is False
+    # Registered in the database but not held by rb-remoting: the dashboard says so instead of calling it.
+    row = next(k for k in admin.get("/api/broker").json()["kiosks"] if k["kiosk_id"] == kid)
+    assert row["connection"] == "not connected" and row["live"] is False
