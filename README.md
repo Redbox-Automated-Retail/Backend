@@ -21,6 +21,7 @@ flowchart LR
     US["rb-updatesvc<br/>srcp :7002, HTTP :7080"]
     IOT["rb-iot<br/>MQTT/TLS :8883<br/>operator API :8081 (localhost)"]
     API["rb-cloudapi<br/>HTTPS :443"]
+    ADM["rb-admin<br/>dashboard HTTPS :8443 (localhost)"]
     DB[(rb-db<br/>PostgreSQL)]
     VOL[(volumes rb-data, rb-certs)]
   end
@@ -31,7 +32,9 @@ flowchart LR
   KCS -- "Transaction, Inventory, Proxy, Kiosk Data, Ads, Reels" --> API
   DS -- "Bluefin activation, Kiosk Data Service" --> API
   KE -- "Kiosk Data Service (session analytics)" --> API
-  US & IOT & API --> DB
+  US & IOT & API & ADM --> DB
+  ADM -- "push config, deploy, remote jobs" --> IOT
+  Admin((operator browser)) --> ADM
   US & IOT & API --- VOL
 ```
 
@@ -41,6 +44,7 @@ flowchart LR
 | `rb-updatesvc` | `redbox-backend` `updatesvc` | Legacy **Update Service** for `updatemgrd`: `srcp://` command port, HTTP content for BITS | 7002 (TLS), 7080 (HTTP), optional plain `rcp://` port |
 | `rb-iot` | `redbox-backend` `iot` | **AWS IoT Core** stand-in for the Update Client: MQTT broker, IoT rules, RPC handlers, configuration sync, operator API | 8883 (MQTT/TLS), 127.0.0.1:8081 |
 | `rb-cloudapi` | `redbox-backend` `cloudapi` | **Every HTTPS API** on one host: Transaction, Inventory, Proxy Service, Kiosk Data Service, Ad Server, Product Reels, Bluefin, IoT certificate service, S3 | 443 |
+| `rb-admin` | `redbox-backend` `dashboard` | **Admin dashboard** (web UI + JSON API) over the same database and the IoT operator API | 127.0.0.1:8443 |
 
 One Python 3.12 image (`Dockerfile`) holds all services; the code is in `redbox_backend/`:
 
@@ -52,6 +56,7 @@ One Python 3.12 image (`Dockerfile`) holds all services; the code is in `redbox_
 | `cloudapi/` | FastAPI app; `routers/` one module per upstream API |
 | `certs.py`, `kioskcrypto.py` | Local CA and certificates; the Update Client's password and EncryptType1 schemes |
 | `admin/cli.py` | Operator CLI (`rb.ps1 admin ...`) |
+| `dashboard/` | Admin dashboard: `server.py` (login, JSON API), `auth.py`, `static/` (single-page UI, no build step) |
 | `schema/*.sql` | Idempotent schema, applied at start-up by every service |
 
 ## Running it
@@ -138,6 +143,46 @@ configuration put back to the shipped Redbox values (the image's `.staged_` copi
    repository gets a full seed snapshot. A kiosk reporting a head the server does not know gets nothing
    (a snapshot would be applied on top and could move files backwards); reset that repository on the kiosk
    (`update-console --reset-repository` or `repository reset`) to reseed it.
+
+## Admin dashboard
+
+`rb-admin` serves a web UI at **https://localhost:8443** (the same local CA signs it; plain HTTP with
+`ADMIN_TLS=false`). It works directly on the shared database, so an edit is what kiosks get on their next call,
+and it calls rb-iot's operator API for anything that must reach a kiosk now.
+
+**Login.** There is no default password. Set one once (it asks twice, at least 10 characters):
+
+```powershell
+.\scripts\rb.ps1 set-admin-password          # user "admin"; or: set-admin-password <user>
+.\scripts\rb.ps1 up                          # restart so rb-admin picks it up
+```
+
+Only a PBKDF2-SHA256 hash (310,000 iterations) is stored, as `ADMIN_USERNAME` / `ADMIN_PASSWORD_HASH` in the
+git-ignored `local\backend.env`. Until it is set nobody can log in. Sessions are HMAC-signed, HttpOnly,
+SameSite=Strict cookies (key in the `rb-certs` volume, `ADMIN_SESSION_HOURS`, default 8); every changing request
+must also carry `X-Requested-With: rb-admin`, failed logins are slowed down and logged. The port is published on
+`127.0.0.1` only; set `ADMIN_BIND_ADDRESS` to expose it (and keep TLS on).
+
+| Page | What it shows / does |
+|---|---|
+| Overview | Counts (kiosks, MQTT connections, transactions, rentals out, discs, repositories, file sets), latest events |
+| Kiosks | Every kiosk with online status (MQTT connection or seen in the last 20 min), last seen, last Update Service check-in, market, location, Update Client version, versions the Kiosk Client reported, configuration version, disc count, last transaction |
+| Kiosk detail | Status, card reader and Bluefin, per-repository update state (kiosk head vs server head), file-set states and the deployments that apply, recent transactions and events; buttons for Ping, push configuration, file-set check, clock sync, peek and upload logs |
+| Inventory, Catalog, Barcodes | View and edit discs per kiosk (filter by kiosk), titles, barcode -> product |
+| Pricing & promotions | Default / price-level / purchase pricing, promo codes, return promo, campaigns, subscription plans, ads |
+| Transactions | Search authorisations, gift cards, pickups, reservations by reference, e-mail, CPN or last four; detail with rentals, returns, customer, card, request and reconcile bodies; links to rentals, returns, reservations, cards |
+| Update Service | Repositories (revisions, head, label, snapshot, how many stores are current); publish a new revision by uploading files or a folder; rebuild a snapshot; auto-subscribe switch; store x repository matrix showing current / behind / missing and link / unlink / automatic per cell |
+| File sets | Create file sets, upload revisions (with dependencies), deploy to a kiosk, market or all on the Update Client (pushed at once) or updatemgrd channel with an activation window; kiosk states per file set |
+| Configuration | Kiosk configuration values (default / market / kiosk), set or delete and push; engine config files (updatemgrd) with per-setting editing that publishes a new generation |
+| Remote jobs | Any IoT command to a kiosk, market or all (templates for Ping, triggers, clock sync, certificate renewal, `ExecuteHttpRequest` on the kiosk's local APIs, ...), download-file jobs with a PowerShell script, updatemgrd download files with a Lua script, request/answer history, files uploaded by kiosks |
+| Logs & events | Everything the services record (telemetry, status messages, transfer statistics, IoT traffic, logins, dashboard edits), filtered by kiosk, source, kind or text, with auto-refresh |
+| All tables | Generic editor for every table above plus customers, cards, locations, stores, sort order, merchandizing orders, profile products |
+
+Customer passwords and PINs are shown masked and only written when changed. Pricing and campaign edits reach
+kiosks on the Kiosk Client's own refresh schedule (30 min to 26 h); use Remote jobs > `ExecuteHttpRequest` with
+`POST http://localhost:9001/api/pricing/all/refresh` (or `.../api/campaign/refresh`) to refresh one kiosk now.
+Remote jobs and pushes only reach Update Clients that are connected over MQTT; updatemgrd work (repository links,
+config files, download files) goes out on its own polls.
 
 ## Operating it
 
@@ -255,6 +300,15 @@ What was run (all containers built and running under WSLC 3.0.3; `rb.ps1 test` =
   promo 200/422, login, loyalty, marketing, ads with asset caching), with an empty replay queue. Pricing and
   campaign refresh were not exercised through KCS because it reads the kiosk id from the 32-bit registry view
   (`WOW6432Node`), which has no `ID` on this PC; they are covered by the pytest tests only.
+- **Admin dashboard**: `tests/test_dashboard.py` (login, forged cookie, CSRF header, table edits that the Proxy
+  Service then honours, configuration values, multipart publishing) and a run in the browser: log in (a wrong
+  password is refused and logged), Overview, Kiosks, a kiosk page with Ping / push configuration / Peek logs
+  answered by a simulated Update Client over mutual-TLS MQTT, setting and pushing a kiosk-scoped value (the
+  client pulled the new version), unlinking a repository from a store (the next `u p` no longer offered it), a
+  file-set deploy pushed to the connected client, an inventory edit, transaction detail, Remote jobs and Logs,
+  and log out. File pickers cannot be driven from the test browser, so uploads were tested through the same API
+  with multipart requests. The browser test used `ADMIN_TLS=false` because the test browser does not trust the
+  local CA; HTTPS was checked with curl.
 - **Not verified**: the real Update Client and Device Service against the backend (both need the CA trusted
   and/or a kiosk id under `WOW6432Node`, i.e. administrator rights; `tests/clients/run-ucs.ps1` is ready for an
   elevated run), and a whole physical kiosk.

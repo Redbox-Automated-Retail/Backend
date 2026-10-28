@@ -10,7 +10,8 @@
     rb.ps1 down                  stop and remove the containers (data volumes are kept)
     rb.ps1 reset [-Force]        down + delete the volumes (database, content, certificates)
     rb.ps1 status                containers and health
-    rb.ps1 logs <service>        service = db | updatesvc | cloudapi | iot
+    rb.ps1 logs <service>        service = db | updatesvc | cloudapi | iot | admin
+    rb.ps1 set-admin-password [user]  set the dashboard login (hash stored in local\backend.env)
     rb.ps1 admin <args...>       python -m redbox_backend admin <args> inside rb-iot
     rb.ps1 admin-in <dir> <args> same, in a one-off container with <dir> mounted at /in
     rb.ps1 import-store <path>   import a kiosk's "REDS\Update Manager\.store" (repositories, config/store files)
@@ -19,7 +20,7 @@
 
   Settings come from backend\local\backend.env (copy example.env). Host ports: 443 (cloud APIs, IoT
   certificate service, S3), 7002 (srcp Update Service), 7080 (change-set downloads), 8883 (MQTT/TLS);
-  8081 (IoT operator API) is published on 127.0.0.1 only.
+  8081 (IoT operator API) and 8443 (admin dashboard) are published on 127.0.0.1 only by default.
 #>
 param(
     [Parameter(Position = 0)] [string] $Command = "help",
@@ -104,11 +105,18 @@ switch ($Command) {
         $mplain = if ($vars["MQTT_PLAIN_PORT"] -and $vars["MQTT_PLAIN_PORT"] -ne "0") { @("$bind$($vars['MQTT_PLAIN_PORT']):$($vars['MQTT_PLAIN_PORT'])") } else { @() }
         Start-Service "rb-cloudapi" "rb-cloudapi" @("${bind}443:443") @("python", "-m", "redbox_backend", "cloudapi") $ucsMount $ucsEnv
         Start-Service "rb-updatesvc" "rb-updatesvc" (@("${bind}7002:7002", "${bind}7080:7080") + $plain) @("python", "-m", "redbox_backend", "updatesvc")
+        # Admin dashboard: localhost only unless ADMIN_BIND_ADDRESS says otherwise.
+        $adminBind = if ($vars["ADMIN_BIND_ADDRESS"]) { $vars["ADMIN_BIND_ADDRESS"] } else { "127.0.0.1" }
+        $adminPort = if ($vars["ADMIN_PORT"]) { $vars["ADMIN_PORT"] } else { "8443" }
+        $adminCmd = @("python", "-m", "redbox_backend", "dashboard", "--port", $adminPort)
+        if ($vars["ADMIN_TLS"] -eq "false") { $adminCmd += "--no-tls" }
+        if (-not $vars["ADMIN_PASSWORD_HASH"]) { Write-Warning "No admin password set: run 'rb.ps1 set-admin-password' (nobody can log in to the dashboard until then)." }
+        Start-Service "rb-admin" "rb-admin" @("${adminBind}:${adminPort}:${adminPort}") $adminCmd @() @{ IOT_ADMIN_URL = "http://rb-iot:8081" }
         Start-Service "rb-iot" "rb-iot" (@("${bind}8883:8883", "127.0.0.1:8081:8081") + $mplain) @("python", "-m", "redbox_backend", "iot")
         & $PSCommandPath status
     }
     "down" {
-        foreach ($c in "rb-iot", "rb-updatesvc", "rb-cloudapi", "rb-db") {
+        foreach ($c in "rb-admin", "rb-iot", "rb-updatesvc", "rb-cloudapi", "rb-db") {
             if (Container-Exists $c) { [void](WQuiet remove -f $c); Write-Host "removed $c" }
         }
     }
@@ -120,9 +128,30 @@ switch ($Command) {
         & $PSCommandPath down
         foreach ($v in $Volumes.Values) { if (WQuiet volume inspect $v) { W volume remove $v | Out-Null; Write-Host "deleted volume $v" } }
     }
+    "set-admin-password" {
+        # Stores only a PBKDF2-SHA256 hash in the git-ignored local\backend.env; restart with "up" afterwards.
+        $user = if ($Rest) { $Rest[0] } else { "admin" }
+        $p1 = Read-Host "Dashboard password for '$user'" -AsSecureString
+        $p2 = Read-Host "Repeat it" -AsSecureString
+        $plain1 = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($p1))
+        $plain2 = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($p2))
+        if ($plain1 -ne $plain2) { throw "The passwords differ." }
+        if ($plain1.Length -lt 10) { throw "Use at least 10 characters." }
+        $salt = New-Object byte[] 16
+        [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($salt)
+        $iterations = 310000
+        $kdf = New-Object Security.Cryptography.Rfc2898DeriveBytes($plain1, $salt, $iterations, [Security.Cryptography.HashAlgorithmName]::SHA256)
+        $hash = "pbkdf2_sha256`$$iterations`$$([Convert]::ToBase64String($salt))`$$([Convert]::ToBase64String($kdf.GetBytes(32)))"
+        New-Item -ItemType Directory -Force (Split-Path $EnvFile) | Out-Null
+        if (-not (Test-Path $EnvFile)) { Copy-Item (Join-Path $Backend "example.env") $EnvFile }
+        $lines = @(Get-Content $EnvFile | Where-Object { $_ -notmatch '^(ADMIN_USERNAME|ADMIN_PASSWORD_HASH)=' })
+        $lines += "ADMIN_USERNAME=$user", "ADMIN_PASSWORD_HASH=$hash"
+        Set-Content -Path $EnvFile -Value $lines -Encoding ASCII
+        Write-Host "Saved the password hash for '$user' in $EnvFile. Run 'rb.ps1 up' to apply it."
+    }
     "status" {
         & $Wslc list --all
-        foreach ($probe in @(@("rb-cloudapi", "https://localhost:443/_health"), @("rb-updatesvc", "http://localhost:7080/_health"))) {
+        foreach ($probe in @(@("rb-cloudapi", "https://localhost:443/_health"), @("rb-updatesvc", "http://localhost:7080/_health"), @("rb-admin", "https://localhost:8443/api/status"))) {
             try {
                 $r = & curl.exe -sk --max-time 3 $probe[1]
                 Write-Host ("{0,-14} {1}" -f $probe[0], $r)

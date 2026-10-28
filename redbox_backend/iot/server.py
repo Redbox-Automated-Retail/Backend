@@ -256,7 +256,8 @@ def admin_app():
 
     @app.get("/clients")
     async def clients():
-        return [{"clientId": c.client_id, "peer": str(c.peer), "subscriptions": list(c.subscriptions)}
+        return [{"clientId": c.client_id, "peer": ":".join(map(str, c.peer)) if isinstance(c.peer, tuple) else str(c.peer),
+                 "subscriptions": list(c.subscriptions)}
                 for c in broker.clients.values()]
 
     @app.post("/send")

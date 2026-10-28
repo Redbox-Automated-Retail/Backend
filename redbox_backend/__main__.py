@@ -10,6 +10,7 @@ SERVICES = {
     "iot": "redbox_backend.iot.server",
     "certs": "redbox_backend.certs",
     "admin": "redbox_backend.admin.cli",
+    "dashboard": "redbox_backend.dashboard.server",
 }
 
 
