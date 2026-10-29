@@ -70,6 +70,9 @@ DEFAULT_HOSTNAMES = [
     "iotcertificateservice.kiosk.prod.redbox.com",
     "files.kiosk.prod.redbox.com",
     "tickets-dev.redbox.com",
+    # Kiosk Engine: legacy reservation broker (gtcp, no TLS) and Kiosk Services (https, rb-cloudapi)
+    "blt.accessredbox.net",
+    "bl2.accessredbox.net",
     "aj5a0v5j9z9ai-ats.iot.us-east-1.amazonaws.com",
     "a2zxs75ezdmapj-ats.iot.us-east-1.amazonaws.com",
     "localhost",
