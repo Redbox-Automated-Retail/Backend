@@ -153,7 +153,11 @@ profile came from `admin kiosk-profile 74001 --address <Default Switch IP>`, wit
   invalid according to the validation procedure", while HTTPS to the same CA validates. Probable cause: MQTTnet
   is set up without `IgnoreCertificateRevocationErrors`, and the backend's certificates have no CRL or OCSP
   endpoint. This is a backend issue, not the installer's. The backend now serves a CRL (commit "certs: CRL
-  distribution point and a served CRL"), which came after this run; the installer has not been re-run against it.
+  distribution point and a served CRL").
+- **Re-run from a fresh sandbox against the fixed backend** (same payload, `HalConfig` set). All nine steps passed
+  without intervention in about 10 minutes, 8 of them for the runtimes. Within a minute of 90-finish the Update
+  Client connected over MQTT (`client 74001 connected`, subscribed to its command topics, and received
+  `SyncTimestampAndTimezone`). The engine registered with the broker again.
 
 **The original installer in the same setup** (`-Original`, same seed, same backend):
 
