@@ -164,6 +164,24 @@ WSLC publishes on `127.0.0.1` unless an address is given, so `rb.ps1` binds to `
 `0.0.0.0`) for kiosks on the LAN. The IoT operator API is only published on `127.0.0.1`. The plain debug ports
 are `UPDATE_SERVICE_PLAIN_PORT` / `MQTT_PLAIN_PORT` in `.env`.
 
+**Where WSLC keeps its data.** Images, containers and the `rb-*` volumes all live in one disk,
+`<storagePath>\wslc\sessions\<session>\storage.vhdx`. It grows past 10 GB with the imported seeds.
+`storagePath` defaults to `%LOCALAPPDATA%`; to keep the disk on another drive, set it in
+`%LOCALAPPDATA%\wslc\settings.yaml` (`wslc system info` prints the path):
+
+```yaml
+session:
+  storagePath: 'E:\'          # disk at E:\wslc\sessions\wslc-cli-<user id>\storage.vhdx
+```
+
+Changing it does not move an existing disk; WSLC starts a new, empty session at the new path. To keep the data:
+
+1. `rb.ps1 down`, then `wslc system session terminate`.
+2. Copy the `sessions\<session>` folder to `<storagePath>\wslc\sessions\` and check that the copy's hash matches.
+3. Set `storagePath`.
+4. Start WSLC (any `wslc` command); `wslc images` should list the old images.
+5. Delete the old folder.
+
 ### Secrets
 
 Nothing secret is committed. The certificates and the S3 signing key are generated into the `rb-certs`
