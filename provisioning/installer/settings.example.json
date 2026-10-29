@@ -1,0 +1,56 @@
+{
+  "$comment": "Install-Kiosk.ps1 settings. Relative paths are relative to this file. Every key but StoreId and DataZip is optional; the values shown are the defaults unless marked. See README.md.",
+  "StoreId": 12345,
+  "DataZip": "data.zip",
+  "KioskType": "R630",
+  "Environment": "Production",
+  "TestMode": false,
+  "Reboot": true,
+  "StateDir": "C:\\ProgramData\\Redbox\\installer",
+  "Backend": {
+    "ProfileFile": "kiosk-12345.json",
+    "Address": null,
+    "Reprovision": "rb-reprovision\\rb-reprovision.exe"
+  },
+  "Prerequisites": {
+    "DotNetCoreRuntime": { "Path": "prerequisites\\dotnet-runtime-2.2.1-win-x86.exe" },
+    "AspNetCoreRuntime": { "Path": "prerequisites\\aspnetcore-runtime-2.2.1-win-x86.exe" },
+    "DotNetFramework": { "Path": null },
+    "NetFx3": "Enable",
+    "NetFx3Source": null,
+    "IngenicoDriver": null
+  },
+  "User": {
+    "Name": "kiosk",
+    "Create": true,
+    "PasswordFile": null,
+    "Administrator": false,
+    "AutoLogon": true
+  },
+  "Shell": {
+    "KioskShell": "KioskShell",
+    "Mode": "Auto",
+    "Wallpaper": null,
+    "LockScreen": null
+  },
+  "Hardening": {
+    "DisableAutorun": true,
+    "DisableAccessibilityHotkeys": true,
+    "DisableTaskManager": true,
+    "DisableErrorDebugger": true,
+    "CrashAutoReboot": true,
+    "ServicesPipeTimeoutMs": 60000,
+    "BrowserEmulationIE8": true,
+    "MuteSound": true,
+    "QuoteServicePaths": true,
+    "AuditPolicy": false
+  },
+  "Hardware": {
+    "Hal": true,
+    "HalConfig": null,
+    "HalAllowV4Runtime": false,
+    "CardReaderFirmware": false,
+    "DellBios": { "Enabled": false, "Command": null, "Arguments": null }
+  },
+  "StartAfterInstall": null
+}
