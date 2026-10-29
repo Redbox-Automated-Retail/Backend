@@ -117,3 +117,17 @@ def test_publish_revision_upload(client):
     d = client.get(f"/api/updates/repos/{repo_name}").json()
     assert {(f["target_path"], f["target_name"]) for f in d["files"]} == {("C:\\Temp\\dash", "a.txt"),
                                                                           ("C:\\Temp\\dash\\sub", "b.txt")}
+
+
+def test_reprovision_settings_download(client):
+    import json
+    client.cookies.clear()
+    assert client.get("/api/reprovision/990123.json").status_code == 401
+    login(client)
+    r = client.get("/api/reprovision/990123.json", params=[("address", "10.1.2.3"), ("market", "m1"),
+                                                           ("rewrite", "https://a=https://b")])
+    assert r.status_code == 200
+    assert "kiosk-990123-reprovision.json" in r.headers["content-disposition"]
+    doc = json.loads(r.text)
+    assert doc["KioskId"] == 990123 and doc["Market"] == "m1" and doc["Hosts"]["Address"] == "10.1.2.3"
+    assert doc["UrlRewrites"] == {"https://a": "https://b"} and doc["CaCertificate"].startswith("-----BEGIN")

@@ -22,11 +22,11 @@ import urllib.request
 from typing import List, Optional
 
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .. import blobs, certs, config, db, filesets
+from .. import blobs, certs, config, db, filesets, kioskprofile
 from ..iot import kioskconfig
 from ..updatesvc import repo
 from . import auth
@@ -171,6 +171,20 @@ async def kiosks():
         out.append(dict(r, mqtt_connected=kid in clients, online=kid in clients or bool(recent),
                         versions=info.get("Versions"), info=None))
     return ok(out)
+
+
+@app.get("/api/reprovision/{kiosk_id}.json")
+async def reprovision_profile(kiosk_id: int, address: Optional[str] = None, market: Optional[str] = None,
+                              base_domain: Optional[str] = None, rewrite: List[str] = Query(default=[])):
+    """Settings file for kiosk/reprovision (`rb-reprovision apply`), as a download."""
+    if not base_domain:
+        address = address or config.BACKEND_PUBLIC_IP
+    if market is None:
+        market = await db.fetchval("SELECT market FROM kiosks WHERE kiosk_id=%s", kiosk_id)
+    doc = kioskprofile.profile(kiosk_id, address=address, market=market or None, base_domain=base_domain or None,
+                               rewrites=dict(r.split("=", 1) for r in rewrite if "=" in r))
+    return Response(json.dumps(doc, indent=2), media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="kiosk-{kiosk_id}-reprovision.json"'})
 
 
 @app.get("/api/kiosks/{kiosk_id}")

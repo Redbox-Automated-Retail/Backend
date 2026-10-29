@@ -126,7 +126,8 @@ routes.kiosks = async () => {
   title("Kiosks");
   const rows = await api("/kiosks");
   view().innerHTML = `<div class="toolbar"><input id="kf" placeholder="Filter by id, market, city" class="grow">
-    <a class="button" href="#/data/kiosks">Edit kiosk records</a></div><div id="kt"></div>`;
+    <button id="rpv">Reprovision a kiosk</button><a class="button" href="#/data/kiosks">Edit kiosk records</a></div><div id="kt"></div>`;
+  $("#rpv").addEventListener("click", () => reprovisionDialog(""));
   const draw = () => {
     const f = $("#kf").value.toLowerCase();
     const list = rows.filter((r) => !f || JSON.stringify([r.kiosk_id, r.market, r.city, r.label]).toLowerCase().includes(f));
@@ -152,7 +153,7 @@ routes.kiosk = async (id) => {
   view().innerHTML = `<div class="toolbar">
       <button data-cmd="Ping">Ping</button><button data-cmd="TriggerGetConfigChanges">Push configuration</button>
       <button data-cmd="TriggerReportFileSetVersions">Check file sets</button><button data-cmd="SyncTimestampAndTimezone">Sync clock</button>
-      <button id="peek">Peek logs</button><button id="upl">Upload logs</button>
+      <button id="peek">Peek logs</button><button id="upl">Upload logs</button><button id="rpv">Reprovision file</button>
       <a class="button" href="#/data/inventory?kiosk=${esc(id)}">Inventory</a><a class="button" href="#/transactions?kiosk=${esc(id)}">Transactions</a>
       <a class="button" href="#/logs?kiosk=${esc(id)}">Events</a></div>
     <div class="grid2">
@@ -190,7 +191,30 @@ routes.kiosk = async (id) => {
   }));
   $("#peek").addEventListener("click", () => peekDialog(id));
   $("#upl").addEventListener("click", () => uploadDialog(id));
+  $("#rpv").addEventListener("click", () => reprovisionDialog(id, k.market));
 };
+
+// Settings file for kiosk/reprovision: run `rb-reprovision apply <file>` on the kiosk (elevated).
+function reprovisionDialog(id, market) {
+  const root = modal(`<h3>Reprovision a kiosk</h3>
+    <p class="muted">Downloads the settings file for <code>rb-reprovision apply</code> (kiosk/reprovision in the repository):
+    hosts entries, the backend CA, store ID, engine registry, Update Manager / Update Client / Kiosk Client / Device Service URLs.</p>
+    <form id="rpf" class="card">
+      <label>Kiosk (store) ID <input name="kiosk" required value="${esc(id)}" size="8"></label>
+      <label>Backend address for the hosts file <input name="address" placeholder="BACKEND_PUBLIC_IP"></label>
+      <label>or your own DNS domain <input name="base_domain" placeholder="e.g. kiosk.example.net (no hosts entries)"></label>
+      <label>Market <input name="market" value="${esc(market || "")}"></label>
+      <label>URL rewrites, one OLD=NEW per line <textarea name="rewrite" rows="3" placeholder="https://old-host=https://dataservice.kiosk.prod.redbox.com"></textarea></label>
+      <button>Download</button></form>`);
+  $("#rpf", root).addEventListener("submit", (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const q = new URLSearchParams();
+    for (const k of ["address", "base_domain", "market"]) if (f.get(k)) q.append(k, f.get(k));
+    for (const r of String(f.get("rewrite") || "").split("\n").map((x) => x.trim()).filter(Boolean)) q.append("rewrite", r);
+    location.href = `/api/reprovision/${encodeURIComponent(f.get("kiosk"))}.json?` + q;
+  });
+}
 
 const FILE_TYPES = ["UpdateClientServiceLogs", "KioskClientServiceLogs", "KioskEngineLogs", "UpdateManagerLogs", "DeviceServiceLogs",
   "HALLogs", "ErrorLogs", "Configuration", "KioskEngineDataDirectory", "Certificates"];

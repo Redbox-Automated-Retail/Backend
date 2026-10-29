@@ -28,6 +28,10 @@ Kiosk configuration (configuration.json via the Update Client):
   kconfig-set <Category> <Setting> <value> [--type string] [--kiosk K | --market M] [--rank R]
   kconfig-list [--kiosk K]
 
+Kiosk reprovisioning (kiosk/reprovision, rb-reprovision apply <file> on the kiosk):
+  kiosk-profile <kiosk id> (--address IP | --base-domain D) [--market M] [--rewrite OLD=NEW ...] [--no-ca]
+               [--broker-port P] > kiosk-<id>.json
+
 IoT:
   iot-send <kiosk|market:M|all> <command> [--version V] [--payload JSON]  (via the iot admin API)
   events [--kiosk K] [--limit N]
@@ -40,7 +44,7 @@ import pathlib
 import sys
 import urllib.request
 
-from .. import blobs, config, db, filesets
+from .. import blobs, config, db, filesets, kioskprofile
 from ..updatesvc import editions, repo
 
 
@@ -286,6 +290,17 @@ async def cmd_events(args):
               f"{json.dumps(r['payload'], default=str)[:300]}")
 
 
+async def cmd_kiosk_profile(args):
+    if not args.address and not args.base_domain:
+        sys.exit("give --address (hosts-file mapping of the Redbox names) or --base-domain (your own DNS names)")
+    doc = kioskprofile.profile(args.kiosk_id, address=args.address, market=args.market, base_domain=args.base_domain,
+                               rewrites=dict(r.split("=", 1) for r in args.rewrite or []), broker_port=args.broker_port,
+                               include_ca=not args.no_ca)
+    for w in doc.get("Warnings", []):
+        print("warning: " + w, file=sys.stderr)
+    print(json.dumps(doc, indent=2))
+
+
 def parser():
     ap = argparse.ArgumentParser(prog="admin", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -325,6 +340,10 @@ def parser():
     p.add_argument("--type", default="string"); p.add_argument("--kiosk", type=int); p.add_argument("--market")
     p.add_argument("--rank", type=int); p.add_argument("--no-push", action="store_true"); p.set_defaults(fn=cmd_kconfig_set)
     p = sub.add_parser("kconfig-list"); p.add_argument("--kiosk", type=int); p.set_defaults(fn=cmd_kconfig_list)
+    p = sub.add_parser("kiosk-profile"); p.add_argument("kiosk_id", type=int); p.add_argument("--address")
+    p.add_argument("--base-domain"); p.add_argument("--market"); p.add_argument("--rewrite", action="append")
+    p.add_argument("--broker-port", type=int, default=7890); p.add_argument("--no-ca", action="store_true")
+    p.set_defaults(fn=cmd_kiosk_profile)
     p = sub.add_parser("iot-send"); p.add_argument("target"); p.add_argument("command")
     p.add_argument("--version", type=int, default=1); p.add_argument("--payload"); p.set_defaults(fn=cmd_iot_send)
     p = sub.add_parser("events"); p.add_argument("--kiosk", type=int); p.add_argument("--limit", type=int, default=50)

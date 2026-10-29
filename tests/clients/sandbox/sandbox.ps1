@@ -111,9 +111,12 @@ switch ($Command) {
     & $tarExe -xf $emuTar -C $emu
     if ($LASTEXITCODE -or -not (Test-Path (Join-Path $emu "hal_hw_emu\__main__.py"))) { throw "emulator checkout failed" }
 
-    Step "Kiosk Engine and Device Service from the backend's update store (served revisions)"
+    Step "Kiosk Engine, Device Service, Update Manager, Update Client, Kiosk Client from the backend's update store"
     Remove-Item $engineRoot -Recurse -Force -ErrorAction SilentlyContinue
-    Export-Repos $engineRoot @("kop-v2-engine", "kop-rental-bundles", "kop-shared-bundles", "device-service")
+    # Only the engine and the Device Service run in the sandbox; the other three are there so that rb-reprovision
+    # finds and edits their configuration files as on a kiosk.
+    Export-Repos $engineRoot @("kop-v2-engine", "kop-rental-bundles", "kop-shared-bundles", "device-service",
+                               "kop-update-manager", "updateclient", "kioskclient")
     Step "the kiosk image's data folder"
     robocopy (Join-Path $ImageDir "REDS\Kiosk Engine\data") (Join-Path $reds "Kiosk Engine\data") /E /NFL /NDL /NJH /NJS /NP /R:1 /W:1 | Out-Null
     # Its config files point wherever the image was repointed; use Redbox's host names (hosts-mapped in the sandbox).
@@ -133,6 +136,13 @@ switch ($Command) {
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $backend "scripts\rb.ps1") export-ca | Out-Null
     Copy-Item (Join-Path $backend "certs\ca.cer") (Join-Path $control "ca.cer") -Force
     Set-Content (Join-Path $control "store-id.txt") $StoreId
+
+    Step "rb-reprovision and this kiosk's settings file (step 40 applies it)"
+    & (Join-Path $backend "kiosk\reprovision\build.ps1") -Out (Join-Path $tools "reprovision")
+    # The hosts address is filled in inside the sandbox (--address), where the Default Switch address is known.
+    $profilePath = Join-Path $control "kiosk-profile.json"
+    cmd /c "`"$wslc`" exec -e LOG_LEVEL=WARNING rb-updatesvc python -m redbox_backend admin kiosk-profile $StoreId --address 0.0.0.0 > `"$profilePath`""
+    if ($LASTEXITCODE) { throw "admin kiosk-profile failed" }
     "prepared $Work"
 }
 "up" {

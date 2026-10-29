@@ -179,6 +179,12 @@ only; use `--rewrite OLD=NEW` to change host names on the way in.
 The defaults keep the **original Redbox host names**, so a kiosk needs hosts entries, the CA, and its
 configuration put back to the shipped Redbox values (the image's `.staged_` copies hold them).
 
+**`kiosk/reprovision`** does steps 1-3 in one go on the kiosk, and can undo them. Get the kiosk's settings
+file from the dashboard (Kiosks, then Reprovision a kiosk) or with `admin kiosk-profile <id> --address <ip>`.
+Then run `rb-reprovision show` / `apply` / `revert` on the kiosk, elevated. See
+[kiosk/reprovision/README.md](kiosk/reprovision/README.md). The steps below are what it does, for doing them
+by hand.
+
 1. **Hosts file** (`C:\Windows\System32\drivers\etc\hosts`), with `<ip>` the PC running WSLC:
 
    ```
@@ -322,8 +328,11 @@ time. `tests/clients/sandbox/sandbox.ps1`:
   - `10-com0com`: COM1<->COM10, COM3<->COM13;
   - `20-hw-emu`;
   - `30-halsvc`: the real HAL as a Windows service, allowed onto the v4 runtime;
-  - `40-kiosk-network`: hosts entries for Redbox's host names, the CA, and the engine's registry values
-    (`engine-registry.ps1`, including the Device Service simulator card reader);
+  - `40-kiosk-network` runs in two steps:
+    - a baseline: a real kiosk's machine settings (`engine-registry.ps1`, including the Device Service
+      simulator card reader), with the production broker URL (`:443`) and a placeholder store ID;
+    - `rb-reprovision apply` with the settings file `prepare` generated: hosts entries, the CA, the store ID,
+      and the engine and client URLs;
   - `50-engine`: also writes `KioskEngineSimulatedCardReaderData.json`, see `docs/engine-known-issues.md`.
 
   Afterwards `loop.ps1` runs scripts dropped into the control folder (`run-sandbox-step.ps1 -Script|-Command`).

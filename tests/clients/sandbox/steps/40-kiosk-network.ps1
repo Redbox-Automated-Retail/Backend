@@ -1,24 +1,17 @@
-# Point the sandboxed kiosk at the backend as a real kiosk is pointed (README.md, "Pointing a kiosk at the
-# backend"): hosts entries for Redbox's host names -> this PC (through relay.py on the Default Switch address), the
-# backend's CA trusted, and the Kiosk Engine machine settings (engine-registry.ps1, from a real kiosk's export).
-param([string] $HostIp = ((Get-NetRoute -DestinationPrefix 0.0.0.0/0 | Sort-Object RouteMetric | Select-Object -First 1).NextHop),
-      [string] $KioskId = (Get-Content C:\rb\control\store-id.txt -ErrorAction SilentlyContinue))  # the kiosk data's store ID
-if (-not $KioskId) { throw "put the kiosk's store ID in the control folder's store-id.txt" }
+# Point the sandboxed kiosk at the backend the way a real kiosk is reprovisioned (kiosk/reprovision):
+#  1. baseline: the machine settings a real kiosk has (engine-registry.ps1, from a real kiosk's export), with the
+#     production broker URL (:443) and a placeholder store ID, as a kiosk is before it is reprovisioned;
+#  2. rb-reprovision apply: hosts entries for Redbox's host names -> this PC (relay.py on the Default Switch address),
+#     the backend's CA, store ID, engine and client URLs. `rb-reprovision revert` undoes step 2 exactly.
+param([string] $HostIp = ((Get-NetRoute -DestinationPrefix 0.0.0.0/0 | Sort-Object RouteMetric | Select-Object -First 1).NextHop))
 "backend host (default gateway): $HostIp"
-$names = "updatesvc.redbox.com", "proxyservice.kiosk.prod.redbox.com", "transactionservice.kiosk.prodp.redbox.com",
-         "kioskinventory.kiosk.prod.redbox.com", "dataservice.kiosk.prod.redbox.com", "adserver.kiosk.prod.redbox.com",
-         "reels.product.prod.redbox.com", "iotcertificateservice.kiosk.prod.redbox.com", "files.kiosk.prod.redbox.com",
-         "aj5a0v5j9z9ai-ats.iot.us-east-1.amazonaws.com", "a2zxs75ezdmapj-ats.iot.us-east-1.amazonaws.com",
-         "blt.accessredbox.net", "bl2.accessredbox.net"
-$hosts = "$env:windir\System32\drivers\etc\hosts"
-$lines = Get-Content $hosts | Where-Object { $_ -notmatch "# redbox-self-hosted$" }
-$lines += $names | ForEach-Object { "$HostIp $_ # redbox-self-hosted" }
-Set-Content -Path $hosts -Value $lines -Encoding ASCII
-"hosts: $($names.Count) entries"
-Import-Certificate -FilePath C:\rb\control\ca.cer -CertStoreLocation Cert:\LocalMachine\Root | Format-List Subject, Thumbprint | Out-String
-& C:\rb\clients\engine-registry.ps1 -Apply -KioskId $KioskId `
-    -BrokerUrl "gtcp://blt.accessredbox.net:7890/RegistrationBroker/Default.rem" `
+& C:\rb\clients\engine-registry.ps1 -Apply -KioskId 1 `
+    -BrokerUrl "gtcp://blt.accessredbox.net:443/RegistrationBroker/Default.rem" `
     -KioskServicesUrl "https://bl2.accessredbox.net/KioskServices/MessageService.rem" `
     -Manifest C:\rb\control\engine-registry-added.json
+& C:\rb\tools\reprovision\rb-reprovision.exe apply C:\rb\control\kiosk-profile.json --address $HostIp
+"rb-reprovision exit $LASTEXITCODE"
 try { "https check: " + (Invoke-WebRequest -UseBasicParsing https://dataservice.kiosk.prod.redbox.com/_health -TimeoutSec 10).Content }
+catch { "https check failed: $_" }
+try { "https check (Kiosk Services name): " + (Invoke-WebRequest -UseBasicParsing https://bl2.accessredbox.net/_health -TimeoutSec 10).Content }
 catch { "https check failed: $_" }
