@@ -7,7 +7,9 @@ is written from that document; it contains no Redbox code or binaries.
 
 It needs three inputs:
 
-- a **data zip**: an update-store seed in Redbox's store format (`data-<date>.zip`, or one built by the backend);
+- a **data zip**: an update-store seed in Redbox's store format: one of Redbox's `data-<date>.zip`, or one built by
+  this backend with `admin build-seed` / `rb.ps1 build-seed` (`docs/seed-zips.md`; `admin check-seed` checks one
+  before you install it);
 - a **kiosk profile**: the JSON file the backend generates for one kiosk (`admin kiosk-profile`, or the
   dashboard's *Reprovision file*). It holds the backend's address or DNS names, its CA, the store ID and every URL;
 - **KioskShell**: a build of `software/src/Tools/KioskShell`. The seeds do not contain the shell; Redbox shipped it
@@ -150,7 +152,8 @@ profile came from `admin kiosk-profile 74001 --address <Default Switch IP>`, wit
 - **Not working: the Update Client's MQTT connection.** It fails every minute with "The remote certificate is
   invalid according to the validation procedure", while HTTPS to the same CA validates. Probable cause: MQTTnet
   is set up without `IgnoreCertificateRevocationErrors`, and the backend's certificates have no CRL or OCSP
-  endpoint. This is a backend issue, not the installer's.
+  endpoint. This is a backend issue, not the installer's. The backend now serves a CRL (commit "certs: CRL
+  distribution point and a served CRL"), which came after this run; the installer has not been re-run against it.
 
 **The original installer in the same setup** (`-Original`, same seed, same backend):
 
