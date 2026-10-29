@@ -19,8 +19,17 @@ if ($Script) { Copy-Item $Script $tmp } else { Set-Content -Path $tmp -Value $Co
 Move-Item $tmp (Join-Path $inbox "$name.ps1")   # appear complete, not half-written
 $out = Join-Path $ControlDir "outbox\$name.log"
 $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+# loop.ps1 is still appending while we look, so read with FileShare.ReadWrite (Select-String / Get-Content would fail
+# with "being used by another process").
+function Read-Shared($path) {
+    try {
+        $fs = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        try { (New-Object IO.StreamReader($fs)).ReadToEnd() } finally { $fs.Dispose() }
+    } catch [IO.IOException] { $null }
+}
 while ((Get-Date) -lt $deadline) {
-    if ((Test-Path $out) -and (Select-String -Path $out -Pattern '^--- done' -Quiet)) { Get-Content $out; exit 0 }
+    $text = if (Test-Path $out) { Read-Shared $out } else { $null }
+    if ($text -and $text -match '(?m)^--- done') { $text.TrimEnd(); exit 0 }
     Start-Sleep -Milliseconds 500
 }
 "timed out after $TimeoutSeconds s waiting for $out (is the sandbox running loop.ps1?)"

@@ -206,6 +206,15 @@ by hand.
    `srcp://` (Redbox.IPC.Framework, unless `HKLM\SOFTWARE\Redbox\ValidateCallback = false`), MQTTnet
    (`AllowUntrustedCertificates = false`, no pinning) and the .NET Core `HttpClient`s. No certificate
    pinning was found in any client.
+   - **Revocation:** the Update Client's MQTT connection also checks revocation. Without a revocation
+     source, Windows reports "unknown", and the connection fails with "The remote certificate is invalid".
+     So every certificate the CA issues has a CRL distribution point (`CRL_URL`, default
+     `http://files.kiosk.prod.redbox.com/crl/ca.crl`), where `rb-cloudapi` serves an empty CRL signed by the CA.
+   - **Requirements:** the name must resolve on the kiosk (it is in the hosts list), and port 80 must be
+     reachable.
+   - **Certificates issued before this:** the server certificate is reissued automatically. Device
+     certificates issued earlier have no CRL point, which is harmless because kiosks don't check their own
+     certificate.
 
 3. **Configuration keys** (restore the Redbox values where the image was repointed):
 

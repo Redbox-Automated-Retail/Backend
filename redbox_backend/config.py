@@ -79,6 +79,11 @@ DEFAULT_HOSTNAMES = [
     # container names on the WSLC network (tests, service-to-service calls)
     "rb-cloudapi", "rb-updatesvc", "rb-iot",
 ]
+# CRL distribution point put into every certificate the local CA issues; rb-cloudapi serves the (empty) CRL there.
+# Windows' SslStream with revocation checking (MQTTnet in the Update Client) fails on a certificate without one.
+# Must be plain http (Windows does not fetch CRLs over TLS it is still validating) and resolve on the kiosk.
+CRL_URL = _env("CRL_URL", "http://files.kiosk.prod.redbox.com/crl/ca.crl")
+
 EXTRA_HOSTNAMES = [h.strip() for h in (_env("EXTRA_HOSTNAMES", "") or "").split(",") if h.strip()]
 EXTRA_IPS = [h.strip() for h in (_env("EXTRA_IPS", "") or "").split(",") if h.strip()]
 

@@ -13,6 +13,7 @@ import logging
 import os
 import pathlib
 import secrets
+import time
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -88,14 +89,41 @@ def _leaf(ca_cert, ca_key, common_name, sans, server=True, days=1825):
                .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False))
     if sans:
         builder = builder.add_extension(x509.SubjectAlternativeName(sans), critical=False)
+    if config.CRL_URL:
+        builder = builder.add_extension(x509.CRLDistributionPoints([x509.DistributionPoint(
+            [x509.UniformResourceIdentifier(config.CRL_URL)], None, None, None)]), critical=False)
     return builder.sign(ca_key, hashes.SHA256()), key
+
+
+def crl_der():
+    """The CA's CRL (nothing revoked), DER. Kept in CERT_DIR/ca.crl and re-signed a day before it runs out."""
+    p = cert_dir() / "ca.crl"
+    if p.exists():
+        data = p.read_bytes()
+        try:
+            if x509.load_der_x509_crl(data).next_update_utc - _now() > dt.timedelta(days=1):
+                return data
+        except ValueError:
+            pass  # unreadable: sign a new one
+    ca_cert, ca_key = load_ca()
+    number = int(time.time())
+    crl = (x509.CertificateRevocationListBuilder().issuer_name(ca_cert.subject)
+           .last_update(_now() - dt.timedelta(minutes=5)).next_update(_now() + dt.timedelta(days=7))
+           .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)
+           .add_extension(x509.CRLNumber(number), critical=False)
+           .sign(ca_key, hashes.SHA256()))
+    data = crl.public_bytes(serialization.Encoding.DER)
+    tmp = p.with_name(f"ca.crl.{os.getpid()}.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, p)
+    return data
 
 
 def create_server_cert(force=False):
     d = cert_dir()
     names = config.all_hostnames()
     marker = d / "server.names"
-    wanted = "\n".join(names + ["ip:" + i for i in config.EXTRA_IPS])
+    wanted = "\n".join(names + ["ip:" + i for i in config.EXTRA_IPS] + ["crl:" + (config.CRL_URL or "")])
     if (d / "server.crt").exists() and marker.exists() and marker.read_text() == wanted and not force:
         return
     ca_cert, ca_key = create_ca()

@@ -11,9 +11,9 @@ import logging
 import time
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
-from .. import db
+from .. import certs, db
 
 log = logging.getLogger("cloudapi")
 
@@ -64,6 +64,13 @@ def create_app():
     @app.get("/_health")
     async def _health():
         return {"ok": True}
+
+    # CRL of the local CA (config.CRL_URL points here, plain http on CLOUD_API_HTTP_PORT). Registered before the
+    # routers so that the S3 stand-in's bucket paths do not take it.
+    @app.get("/crl/ca.crl")
+    async def _crl():
+        return Response(certs.crl_der(), media_type="application/pkix-crl",
+                        headers={"Cache-Control": "max-age=3600"})
 
     for name in ROUTERS:
         app.include_router(importlib.import_module(name).router)
