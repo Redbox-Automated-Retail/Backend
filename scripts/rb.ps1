@@ -3,7 +3,8 @@
   Build, run, stop and reset the Redbox self-hosted backend with WSLC (wslc.exe).
 
 .DESCRIPTION
-  WSLC has no compose, so this script creates the network, volumes and containers itself.
+  The development path: WSLC has no compose, so this script creates the network, volumes and containers that
+  compose.yaml describes (same names, Dockerfiles and settings file). Production deployments use compose.yaml.
 
     rb.ps1 build                 build the redbox-backend image
     rb.ps1 up                    create network/volumes, generate certificates, start every container
@@ -19,7 +20,7 @@
     rb.ps1 export-ca             copy ca.crt / ca.cer to certs\ for installing on kiosks
     rb.ps1 test                  run the protocol tests inside a container against the running stack
 
-  Settings come from local\backend.env (copy example.env). Host ports: 443 (cloud APIs, IoT
+  Settings come from .env (copy .env.example), the same file compose.yaml uses. Host ports: 443 (cloud APIs, IoT
   certificate service, S3; plain HTTP on 80 for the 2014 Ticket Services), 7002 (srcp Update Service), 7080 (change-set downloads), 8883 (MQTT/TLS);
   8081 (IoT operator API) and 8443 (admin dashboard) are published on 127.0.0.1 only by default.
 #>
@@ -36,7 +37,9 @@ $Image = "redbox-backend:latest"
 $RemotingImage = "redbox-remoting:latest"
 $Network = "redbox"
 $Volumes = @{ pg = "rb-pgdata"; data = "rb-data"; certs = "rb-certs" }
-$EnvFile = Join-Path $Backend "local\backend.env"
+# The same settings file as compose.yaml; local\backend.env is the older location (still read when .env is missing).
+$EnvFile = Join-Path $Backend ".env"
+if (-not (Test-Path $EnvFile) -and (Test-Path (Join-Path $Backend "local\backend.env"))) { $EnvFile = Join-Path $Backend "local\backend.env" }
 $UcsEncryptionSource = Join-Path $Software "src\UpdateClient\UpdateClientService.API\Services\IoT\Certificate\Security\EncryptionService.cs"
 
 function W { & $Wslc @args; if ($LASTEXITCODE -ne 0) { throw "wslc $($args -join ' ') failed ($LASTEXITCODE)" } }
@@ -48,9 +51,14 @@ function WQuiet {
 
 function Read-Env {
     $vars = [ordered]@{}
-    $file = if (Test-Path $EnvFile) { $EnvFile } else { Join-Path $Backend "example.env" }
+    $file = if (Test-Path $EnvFile) { $EnvFile } else { Join-Path $Backend ".env.example" }
     foreach ($line in Get-Content $file) {
-        if ($line -match '^\s*([A-Z0-9_]+)=(.*)$') { $vars[$Matches[1]] = $Matches[2].Trim() }
+        if ($line -match '^\s*([A-Z0-9_]+)=(.*)$') {
+            $v = $Matches[2].Trim()
+            # Quotes as in Compose's .env format (single quotes keep the "$" of a password hash literal).
+            if ($v.Length -ge 2 -and ($v[0] -eq "'" -or $v[0] -eq '"') -and $v[-1] -eq $v[0]) { $v = $v.Substring(1, $v.Length - 2) }
+            $vars[$Matches[1]] = $v
+        }
     }
     $vars["DATABASE_URL"] = "postgresql://redbox:redbox@rb-db:5432/redbox"
     $vars
@@ -146,7 +154,7 @@ switch ($Command) {
         foreach ($v in $Volumes.Values) { if (WQuiet volume inspect $v) { W volume remove $v | Out-Null; Write-Host "deleted volume $v" } }
     }
     "set-admin-password" {
-        # Stores only a PBKDF2-SHA256 hash in the git-ignored local\backend.env; restart with "up" afterwards.
+        # Stores only a PBKDF2-SHA256 hash in the git-ignored .env; restart with "up" afterwards.
         $user = if ($Rest) { $Rest[0] } else { "admin" }
         $p1 = Read-Host "Dashboard password for '$user'" -AsSecureString
         $p2 = Read-Host "Repeat it" -AsSecureString
@@ -160,9 +168,9 @@ switch ($Command) {
         $kdf = New-Object Security.Cryptography.Rfc2898DeriveBytes($plain1, $salt, $iterations, [Security.Cryptography.HashAlgorithmName]::SHA256)
         $hash = "pbkdf2_sha256`$$iterations`$$([Convert]::ToBase64String($salt))`$$([Convert]::ToBase64String($kdf.GetBytes(32)))"
         New-Item -ItemType Directory -Force (Split-Path $EnvFile) | Out-Null
-        if (-not (Test-Path $EnvFile)) { Copy-Item (Join-Path $Backend "example.env") $EnvFile }
+        if (-not (Test-Path $EnvFile)) { Copy-Item (Join-Path $Backend ".env.example") $EnvFile }
         $lines = @(Get-Content $EnvFile | Where-Object { $_ -notmatch '^(ADMIN_USERNAME|ADMIN_PASSWORD_HASH)=' })
-        $lines += "ADMIN_USERNAME=$user", "ADMIN_PASSWORD_HASH=$hash"
+        $lines += "ADMIN_USERNAME=$user", "ADMIN_PASSWORD_HASH='$hash'"
         Set-Content -Path $EnvFile -Value $lines -Encoding ASCII
         Write-Host "Saved the password hash for '$user' in $EnvFile. Run 'rb.ps1 up' to apply it."
     }

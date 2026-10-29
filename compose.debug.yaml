@@ -1,0 +1,14 @@
+# Debug listeners on top of compose.yaml:  docker compose -f compose.yaml -f compose.debug.yaml up -d
+#   rcp://<host>:7012   plain (no TLS) Update Service, e.g. for tests/clients/run-updatemgr-harness.ps1
+#   mqtt://<host>:1883  plain MQTT (no client certificate)
+services:
+  rb-updatesvc:
+    environment:
+      UPDATE_SERVICE_PLAIN_PORT: "7012"
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:7012:7012"
+  rb-iot:
+    environment:
+      MQTT_PLAIN_PORT: "1883"
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:1883:1883"

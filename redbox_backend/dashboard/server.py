@@ -997,7 +997,8 @@ app.mount("/", StaticFiles(directory=STATIC, html=True), name="static")
 def main(argv):
     ap = argparse.ArgumentParser(prog="dashboard")
     ap.add_argument("--port", type=int, default=int(os.environ.get("ADMIN_PORT") or 8443))
-    ap.add_argument("--no-tls", action="store_true")
+    ap.add_argument("--no-tls", action="store_true",
+                    default=(os.environ.get("ADMIN_TLS") or "true").strip().lower() == "false")
     args = ap.parse_args(argv)
     app.state.plain = args.no_tls
     kwargs = {} if args.no_tls else {"ssl_certfile": os.path.join(config.CERT_DIR, "server.crt"),

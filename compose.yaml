@@ -1,0 +1,168 @@
+# Redbox self-hosted backend: production deployment on a Docker host (Docker Engine + Compose v2.24 or newer).
+#
+#   git clone --recurse-submodules git@github.com:Redbox-Automated-Retail/Backend.git && cd Backend
+#   cp .env.example .env                    # edit host names, bind addresses, payment mode
+#   docker compose build
+#   docker compose up -d
+#
+# Settings come from .env (interpolated below and passed to every service). scripts/rb.ps1 (WSLC, development)
+# reads the same file and builds the same two Dockerfiles. Optional debug listeners: compose.debug.yaml.
+name: redbox
+
+x-backend: &backend
+  image: redbox-backend:latest
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  env_file:
+    - path: .env
+      required: false
+  environment: &backend-env
+    DATABASE_URL: postgresql://redbox:redbox@rb-db:5432/redbox
+  volumes:
+    - data:/data
+    - certs:/certs
+  networks: [redbox]
+  depends_on: &backend-deps
+    rb-db:
+      condition: service_healthy
+    rb-certs:
+      condition: service_completed_successfully
+
+services:
+  rb-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: redbox
+      POSTGRES_PASSWORD: redbox
+      POSTGRES_DB: redbox
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [redbox]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "redbox", "-d", "redbox"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # One-shot: CA, server certificate (regenerated when the host name list changes), S3 and internal keys.
+  rb-certs:
+    <<: *backend
+    restart: "no"
+    command: ["python", "-m", "redbox_backend", "certs"]
+    depends_on: {}
+
+  rb-cloudapi:
+    <<: *backend
+    command: ["python", "-m", "redbox_backend", "cloudapi"]
+    environment:
+      <<: *backend-env
+      # The IoT certificate service reads the Update Client's passphrase from the decompiled source.
+      UCS_ENCRYPTION_SOURCE: /ucs/EncryptionService.cs
+    volumes:
+      - data:/data
+      - certs:/certs
+      - ./software/src/UpdateClient/UpdateClientService.API/Services/IoT/Certificate/Security:/ucs:ro
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:443:443"
+      - "${BIND_ADDRESS:-0.0.0.0}:80:80"
+    healthcheck:
+      test: ["CMD", "python", "-m", "redbox_backend.healthcheck", "https://localhost:443/_health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  rb-updatesvc:
+    <<: *backend
+    command: ["python", "-m", "redbox_backend", "updatesvc"]
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:7002:7002"
+      - "${BIND_ADDRESS:-0.0.0.0}:7080:7080"
+    healthcheck:
+      test: ["CMD", "python", "-m", "redbox_backend.healthcheck", "http://localhost:7080/_health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  rb-iot:
+    <<: *backend
+    command: ["python", "-m", "redbox_backend", "iot"]
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:8883:8883"
+      - "127.0.0.1:8081:8081"
+    healthcheck:
+      test: ["CMD", "python", "-m", "redbox_backend.healthcheck", "http://localhost:8081/_health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  # Admin dashboard: localhost only unless ADMIN_BIND_ADDRESS says otherwise. Login: see README, "Admin dashboard".
+  rb-admin:
+    <<: *backend
+    command: ["python", "-m", "redbox_backend", "dashboard"]
+    environment:
+      <<: *backend-env
+      IOT_ADMIN_URL: http://rb-iot:8081
+      RB_PACKAGES_DIR: /packages
+    volumes:
+      - data:/data
+      - certs:/certs
+      # Update-store seeds (data-<date>.zip) the dashboard can import, read-only.
+      - ${PACKAGES_DIR:-./local/packages}:/packages:ro
+    ports:
+      - "${ADMIN_BIND_ADDRESS:-127.0.0.1}:${ADMIN_PORT:-8443}:${ADMIN_PORT:-8443}"
+    healthcheck:
+      test: ["CMD", "python", "-m", "redbox_backend.healthcheck",
+             "https://localhost:${ADMIN_PORT:-8443}/api/status", "http://localhost:${ADMIN_PORT:-8443}/api/status"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  # Legacy .NET Remoting on Mono: reservation broker (gtcp 7890, published) and the Kiosk Services
+  # MessageService (8090) and control API (8091), which stay on the network (rb-cloudapi fronts 8090 on 443).
+  rb-remoting:
+    image: redbox-remoting:latest
+    build:
+      context: .
+      dockerfile: remoting/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      BACKEND_URL: http://rb-cloudapi:80
+    volumes:
+      - certs:/certs:ro
+    networks: [redbox]
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:7890:7890"
+    depends_on:
+      rb-certs:
+        condition: service_completed_successfully
+      rb-cloudapi:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "bash", "-c",
+             "exec 3<>/dev/tcp/127.0.0.1/8091 && printf 'GET /health HTTP/1.0\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q ' 200'"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+networks:
+  redbox:
+    name: redbox
+
+volumes:
+  pgdata:
+    name: rb-pgdata
+  data:
+    name: rb-data
+  certs:
+    name: rb-certs

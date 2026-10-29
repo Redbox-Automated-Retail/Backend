@@ -1,7 +1,7 @@
 """Admin login for the dashboard.
 
-The credentials come from the environment, set up with `scripts/rb.ps1 set-admin-password` (which stores only
-a PBKDF2 hash in the git-ignored local/backend.env):
+The credentials come from the environment (the git-ignored .env), set up with `scripts/rb.ps1 set-admin-password`,
+or with the hash this module prints (`python -m redbox_backend.dashboard.auth`, password on stdin):
   ADMIN_USERNAME        default "admin"
   ADMIN_PASSWORD_HASH   pbkdf2_sha256$<iterations>$<salt b64>$<hash b64>
 Without ADMIN_PASSWORD_HASH nobody can log in. Sessions are HMAC-signed cookies (key in CERT_DIR/dashboard.key),

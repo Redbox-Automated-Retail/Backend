@@ -89,14 +89,65 @@ git clone --recurse-submodules git@github.com:Redbox-Automated-Retail/Backend.gi
 git submodule update --init
 ```
 
-## Running it
+## Deploying with Docker Compose (production)
 
-Prerequisites: WSLC 3.0+ (`wslc version`), network access for the first image build, and the `software/`
-submodule checked out.
+On a Docker host (a Linux server with Docker Engine and Compose v2.24 or newer), `compose.yaml` runs the
+whole stack:
+
+```sh
+git clone --recurse-submodules git@github.com:Redbox-Automated-Retail/Backend.git && cd Backend
+cp .env.example .env            # host names, bind addresses, payment mode, PACKAGES_DIR, ...
+docker compose build            # redbox-backend:latest and redbox-remoting:latest (needs software/)
+docker compose up -d
+docker compose ps               # every service reports "healthy"
+docker compose run --rm -T rb-admin python -m redbox_backend.dashboard.auth   # type a password: prints its hash
+```
+
+| Service | Role | Ports (host) |
+|---|---|---|
+| `rb-db` | PostgreSQL 16 (volume `rb-pgdata`) | none |
+| `rb-certs` | one-shot: CA, server certificate, S3 and internal keys into volume `rb-certs`; every other service waits for it | none |
+| `rb-cloudapi` | cloud HTTPS APIs, IoT certificate service, S3 stand-in | 443, 80 |
+| `rb-updatesvc` | legacy Update Service (`srcp://`) and change-set downloads | 7002, 7080 |
+| `rb-iot` | MQTT broker (AWS IoT stand-in) and operator API | 8883; 8081 on 127.0.0.1 |
+| `rb-admin` | admin dashboard | `ADMIN_PORT` (8443) on `ADMIN_BIND_ADDRESS` (127.0.0.1) |
+| `rb-remoting` | Mono: reservation broker, Kiosk Services MessageService | 7890 |
+
+- Published ports bind to `BIND_ADDRESS` (default `0.0.0.0`). Services restart `unless-stopped` and have
+  healthchecks (`python -m redbox_backend.healthcheck <url>`; `pg_isready`; the Mono host's `/health`).
+- `rb-cloudapi` mounts `software/src/UpdateClient/.../Security` read-only for the Update Client's passphrase
+  (see Secrets), so the submodule must be checked out on the server too.
+- `PACKAGES_DIR` (default `./local/packages`) is mounted read-only into `rb-admin` for the dashboard's seed
+  import.
+- The dashboard login: put `ADMIN_USERNAME=admin` and `ADMIN_PASSWORD_HASH='<hash>'` into `.env`, single-quoted
+  (the hash contains `$`, which Compose would otherwise interpolate), then `docker compose up -d`.
+- Debug listeners (plain `rcp://` on 7012, plain MQTT on 1883):
+  `docker compose -f compose.yaml -f compose.debug.yaml up -d`.
+- Operator commands run in a service container, e.g. `docker compose exec rb-iot python -m redbox_backend admin
+  events --limit 20`; the CA for kiosks is `docker compose run --rm -v "$PWD/certs:/out" rb-certs python -m
+  redbox_backend certs --export /out`.
+
+Settings (`.env`, see `.env.example`): extra certificate names/IPs, the BITS content base URL, the S3 base
+URL, `PAYMENT_MODE` (`approve` / `decline` / `rules`), optional credential keys for updatemgrd's `h:` hash,
+`MQTT_REQUIRE_CLIENT_CERT`.
+
+How far this was verified: Docker is not installed on the development PC, so the stack was not started by
+Docker itself. `docker compose config` (the `docker:27-cli` image under WSLC) validated and resolved
+`compose.yaml` and `compose.debug.yaml`. The resolved services (images built from their `build` sections,
+commands, environment, volumes, network aliases, `depends_on` order) were then started on WSLC in an isolated
+network. `rb-certs` completed, every healthcheck command passed inside its container, and the test suite passed
+against that stack (90 passed; the 4 seed tests skipped because no `PACKAGES_DIR` was mounted). Docker's own
+handling (restart policies, health-gated start, port publishing) was not exercised.
+
+## Development with WSLC (`rb.ps1`)
+
+On Windows without Docker, `scripts/rb.ps1` runs the same containers with WSLC 3.0+ (`wslc version`). It
+creates the network, volumes and containers that `compose.yaml` describes, with the same names, the same two
+Dockerfiles and the same `.env` file (`local\backend.env` is still read when there is no `.env`):
 
 ```powershell
 cd Backend
-copy example.env local\backend.env      # optional; edit host names, bind address, payment mode
+copy .env.example .env                  # optional; edit host names, bind address, payment mode
 .\scripts\rb.ps1 build                  # build redbox-backend:latest and redbox-remoting:latest
 .\scripts\rb.ps1 up                     # network + volumes + certificates + 6 containers
 .\scripts\rb.ps1 status
@@ -109,20 +160,15 @@ copy example.env local\backend.env      # optional; edit host names, bind addres
 .\scripts\rb.ps1 reset                  # stop and delete database, content and certificates
 ```
 
-WSLC has no compose; `rb.ps1` creates the `redbox` network, the `rb-pgdata`/`rb-data`/`rb-certs` volumes and
-the containers with `wslc network/volume/run`. Published ports bind to `BIND_ADDRESS` (default `0.0.0.0`,
-because WSLC otherwise binds `127.0.0.1` only and a kiosk on the LAN could not connect). The IoT operator API
-is only published on `127.0.0.1`.
-
-Settings (`local/backend.env`, see `example.env`): extra certificate names/IPs, the BITS content base URL,
-the S3 base URL, `PAYMENT_MODE` (`approve` / `decline` / `rules`), optional credential keys for updatemgrd's
-`h:` hash, `MQTT_REQUIRE_CLIENT_CERT`, optional plain debug ports.
+WSLC publishes on `127.0.0.1` unless an address is given, so `rb.ps1` binds to `BIND_ADDRESS` (default
+`0.0.0.0`) for kiosks on the LAN. The IoT operator API is only published on `127.0.0.1`. The plain debug ports
+are `UPDATE_SERVICE_PLAIN_PORT` / `MQTT_PLAIN_PORT` in `.env`.
 
 ### Secrets
 
 Nothing secret is committed. The certificates and the S3 signing key are generated into the `rb-certs`
 volume. The IoT certificate service must decrypt the kiosk id the Update Client sends, which needs the
-passphrase hard-coded in `EncryptionService.cs`; `rb.ps1 up` mounts that decompiled source file read-only
+passphrase hard-coded in `EncryptionService.cs`; `compose.yaml` and `rb.ps1 up` mount that decompiled source file read-only
 into `rb-cloudapi` and the service reads the literal at run time (or set `UCS_ENCRYPTION_PASSPHRASE`).
 API keys the kiosk sends are logged as present/absent and not enforced. When importing a kiosk's update
 store, its config files (which may contain API keys and replacement host names) go into the database volume
@@ -189,7 +235,7 @@ configuration put back to the shipped Redbox values (the image's `.staged_` copi
 
 Redbox shipped its update store as `data-<date>.zip` seeds (2014-2024): `<repo>/.revlog/<n>`, `.active`,
 `.current` (all zeros: the installer activates them) and `<rev>-<SHA1(path)>.patch`. Put them in a folder,
-set `PACKAGES_DIR` in `local\backend.env` (it is mounted **read-only**; nothing is copied into the repo), and:
+set `PACKAGES_DIR` in `.env` (it is mounted **read-only**; nothing is copied into the repo), and:
 
 ```powershell
 .\scripts\rb.ps1 import-packages                 # every data-*.zip in PACKAGES_DIR, oldest first
@@ -313,7 +359,7 @@ and it calls rb-iot's operator API for anything that must reach a kiosk now.
 ```
 
 Only a PBKDF2-SHA256 hash (310,000 iterations) is stored, as `ADMIN_USERNAME` / `ADMIN_PASSWORD_HASH` in the
-git-ignored `local\backend.env`. Until it is set nobody can log in. Sessions are HMAC-signed, HttpOnly,
+git-ignored `.env`. Until it is set nobody can log in. Sessions are HMAC-signed, HttpOnly,
 SameSite=Strict cookies (key in the `rb-certs` volume, `ADMIN_SESSION_HOURS`, default 8); every changing request
 must also carry `X-Requested-With: rb-admin`, failed logins are slowed down and logged. The port is published on
 `127.0.0.1` only; set `ADMIN_BIND_ADDRESS` to expose it (and keep TLS on).
