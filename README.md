@@ -267,6 +267,13 @@ or use the dashboard's **Update packages** page (import with progress) and the r
 - The image's own `.store` is newer still for `updateclient` (34 revisions against 33 in the May 2024 seed);
   importing it as well serves that revision.
 
+**Building seeds.** `admin build-seed` (or `rb.ps1 build-seed`, or **Build a seed zip** on the Update packages
+page) writes new `data-<MMDDYYYY>.zip` seeds in the same format. It can take repositories at chosen
+revisions, an imported edition's history, and your own content added as new revisions (with xdelta3
+deltas). `admin check-seed` checks any seed the way updatemgrd uses it. Rebuilt from its edition,
+`data-572024.zip` comes out entry-for-entry identical to Redbox's. The format, the CLI and what was verified
+are in [docs/seed-zips.md](docs/seed-zips.md).
+
 ## Legacy .NET Remoting (`rb-remoting`)
 
 Two kiosk services were .NET Remoting, so they run on **Mono 6.12 with the real `System.Runtime.Remoting` and the

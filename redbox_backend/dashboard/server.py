@@ -734,6 +734,78 @@ async def packages_import(body: dict):
     return ok({"job": job})
 
 
+def _exports_dir():
+    p = pathlib.Path(config.DATA_DIR) / "exports"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+@app.post("/api/packages/build")
+async def packages_build(body: dict):
+    """Build an installer seed (updatesvc/seedzip.py) into DATA_DIR/exports in the background.
+
+    body: {"repos": [{"name": .., "revision": hash prefix | label | null}] or "all": true, "edition": name | null,
+           "date": "MMDDYYYY" | null}
+    """
+    from ..updatesvc import seedzip
+    edition = body.get("edition") or None
+    if body.get("all"):
+        q = ("SELECT DISTINCT repo FROM upd_edition_revisions WHERE edition=%s ORDER BY repo", edition) if edition \
+            else ("SELECT DISTINCT repo FROM upd_revisions ORDER BY repo",)
+        specs = [(r["repo"], None, edition) for r in await db.fetch(*q)]
+    else:
+        specs = [(r["name"], r.get("revision") or None, edition) for r in body.get("repos") or [] if r.get("name")]
+    if not specs:
+        raise HTTPException(400, "choose repositories (or all)")
+    when = dt.datetime.strptime(body["date"], "%m%d%Y") if body.get("date") else dt.datetime.now()
+    name = seedzip.default_name(when.date())
+    out = _exports_dir() / name
+    job = await db.fetchval("INSERT INTO upd_import_jobs (source, options) VALUES (%s,%s) RETURNING id",
+                            f"build {name}", db.jsonb({"kind": "build", "specs": specs}))
+
+    async def progress(msg):
+        await db.execute("UPDATE upd_import_jobs SET progress = progress || %s WHERE id=%s",
+                         db.jsonb([{"t": dt.datetime.now(dt.timezone.utc).isoformat(), "m": msg}]), job)
+
+    async def run():
+        try:
+            s = await seedzip.build(out, specs, when=when, progress=progress)
+            await progress(f"wrote {name}: {s['bytes'] // 2**20} MB, SHA-1 {s['sha1']}")
+            await db.execute("UPDATE upd_import_jobs SET status='done', finished_at=now() WHERE id=%s", job)
+        except Exception as e:
+            log.exception("seed build failed")
+            await progress(f"failed: {e}")
+            await db.execute("UPDATE upd_import_jobs SET status='failed', finished_at=now() WHERE id=%s", job)
+    task = asyncio.create_task(run())
+    _import_tasks.add(task)
+    task.add_done_callback(_import_tasks.discard)
+    await db.record_event(None, "dashboard", "package-build", {"job": job, "file": name, "repositories": len(specs)})
+    return ok({"job": job, "file": name})
+
+
+@app.get("/api/packages/exports")
+async def packages_exports():
+    return ok([{"file": p.name, "size": p.stat().st_size,
+                "modified": dt.datetime.fromtimestamp(p.stat().st_mtime, dt.timezone.utc)}
+               for p in sorted(_exports_dir().glob("*.zip"))])
+
+
+@app.get("/api/packages/exports/{name}")
+async def packages_export_download(name: str):
+    p = _exports_dir() / pathlib.PurePath(name).name
+    if not p.is_file() or p.suffix != ".zip":
+        raise HTTPException(404)
+    return FileResponse(p, media_type="application/zip", filename=p.name)
+
+
+@app.delete("/api/packages/exports/{name}")
+async def packages_export_delete(name: str):
+    p = _exports_dir() / pathlib.PurePath(name).name
+    if p.is_file() and p.suffix == ".zip":
+        p.unlink()
+    return ok({"deleted": p.name})
+
+
 @app.get("/api/filesets")
 async def fileset_list():
     sets = await db.fetch("SELECT * FROM fs_filesets ORDER BY id")

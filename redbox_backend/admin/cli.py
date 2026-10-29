@@ -13,6 +13,12 @@ Update Service (legacy updatemgrd):
                                      stdout, paths relative to the drive root (to run kiosk programs off-kiosk)
   publish <repo> <dir> --target-path 'C:\\Program Files\\...' [--label L]
                                      add a revision from a local directory (deltas via xdelta3)
+  build-seed <out.zip> [--repo NAME[@REV] ... | --all] [--edition NAME] [--add REPO DIR TARGET_PATH ...]
+             [--label REPO=LABEL ...] [--no-deltas] [--retarget OLD=NEW ...] [--date MMDDYYYY]
+                                     write an installer seed (data-<MMDDYYYY>.zip) of repositories at chosen
+                                     revisions plus new content; format in docs/seed-zips.md
+  check-seed <zip> [--compare REFERENCE.zip] [--no-apply]
+                                     check a seed as updatemgrd would use it (any seed, real or built)
   repos                              list repositories and heads
   stores                             list stores and their reported heads
   store-set <number> [--enabled B] [--time-zone SERIALIZED] [--correct-time B]
@@ -45,7 +51,7 @@ import sys
 import urllib.request
 
 from .. import blobs, config, db, filesets, kioskprofile
-from ..updatesvc import editions, repo
+from ..updatesvc import editions, repo, seedzip
 
 
 def _bool(s):
@@ -290,6 +296,40 @@ async def cmd_events(args):
               f"{json.dumps(r['payload'], default=str)[:300]}")
 
 
+async def cmd_build_seed(args):
+    import datetime as dt
+    if args.all:
+        if args.edition:
+            names = [r["repo"] for r in await db.fetch("SELECT DISTINCT repo FROM upd_edition_revisions WHERE edition=%s"
+                                                       " ORDER BY repo", args.edition)]
+        else:
+            names = [r["repo"] for r in await db.fetch("SELECT DISTINCT repo FROM upd_revisions ORDER BY repo")]
+        specs = [(n, None, args.edition) for n in names]
+    else:
+        specs = [(s.split("@", 1)[0], s.split("@", 1)[1] if "@" in s else None, args.edition) for s in args.repo or []]
+    labels = dict(x.split("=", 1) for x in args.label or [])
+    additions = [(r, seedzip.files_from_dir(d, tp), labels.get(r)) for r, d, tp in args.add or []]
+    when = dt.datetime.strptime(args.date, "%m%d%Y") if args.date else None
+    out = pathlib.Path(args.out)
+    if out.is_dir():
+        out = out / seedzip.default_name(when.date() if when else None)
+    try:
+        summary = await seedzip.build(out, specs, additions, when=when, retarget=[r.split("=", 1) for r in args.retarget or []],
+                                      deltas=not args.no_deltas, allow_placeholders=args.allow_placeholders,
+                                      progress=lambda m: print(m, file=sys.stderr, flush=True))
+    except seedzip.SeedError as e:
+        sys.exit(str(e))
+    print(json.dumps(summary, indent=2))
+
+
+async def cmd_check_seed(args):
+    res = seedzip.check(args.zip, reference=args.compare, apply=not args.no_apply,
+                        progress=lambda m: print(m, file=sys.stderr, flush=True))
+    print(json.dumps(res, indent=2))
+    if not res["ok"]:
+        sys.exit(1)
+
+
 async def cmd_kiosk_profile(args):
     if not args.address and not args.base_domain:
         sys.exit("give --address (hosts-file mapping of the Redbox names) or --base-domain (your own DNS names)")
@@ -316,6 +356,16 @@ def parser():
     p.set_defaults(fn=cmd_export)
     p = sub.add_parser("publish"); p.add_argument("repo"); p.add_argument("dir"); p.add_argument("--target-path", required=True)
     p.add_argument("--label"); p.add_argument("--no-deltas", action="store_true"); p.set_defaults(fn=cmd_publish)
+    p = sub.add_parser("build-seed"); p.add_argument("out", help="zip file, or a folder for data-<MMDDYYYY>.zip")
+    p.add_argument("--repo", action="append", help="NAME or NAME@REVISION (hash prefix or label)")
+    p.add_argument("--all", action="store_true"); p.add_argument("--edition")
+    p.add_argument("--add", nargs=3, action="append", metavar=("REPO", "DIR", "TARGET_PATH"))
+    p.add_argument("--label", action="append", help="REPO=LABEL for the revision --add creates")
+    p.add_argument("--no-deltas", action="store_true"); p.add_argument("--retarget", action="append")
+    p.add_argument("--date", help="MMDDYYYY: entry timestamps and default file name (default now)")
+    p.add_argument("--allow-placeholders", action="store_true"); p.set_defaults(fn=cmd_build_seed)
+    p = sub.add_parser("check-seed"); p.add_argument("zip"); p.add_argument("--compare")
+    p.add_argument("--no-apply", action="store_true"); p.set_defaults(fn=cmd_check_seed)
     sub.add_parser("repos").set_defaults(fn=cmd_repos)
     sub.add_parser("editions").set_defaults(fn=cmd_editions)
     p = sub.add_parser("pin"); p.add_argument("repo"); p.add_argument("revision", help="hash prefix, label or 'latest'")

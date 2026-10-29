@@ -507,7 +507,35 @@ routes.packages = async () => {
     <h3>Import jobs</h3><div id="jobs"></div>
     <h3>Editions</h3>${table(d.editions, [{ key: "name", label: "Edition" }, { key: "edition_date", label: "Date" },
       { key: "revisions", label: "Repositories (revisions)", wrap: true, render: (v) => esc(Object.entries(v).map(([k, n]) => `${k} ${n}`).join(", ")) },
-      { key: "source" }, { key: "imported_at", label: "Imported" }], { empty: "No edition imported yet." })}`;
+      { key: "source" }, { key: "imported_at", label: "Imported" }], { empty: "No edition imported yet." })}
+    <h3>Build a seed zip</h3>
+    <form id="bsf" class="card"><p class="muted">Writes <code>data-&lt;MMDDYYYY&gt;.zip</code> in the store format (docs/seed-zips.md) from the
+      repositories here, at the chosen revisions. New package content is added with <code>admin publish</code> first, or with
+      <code>admin build-seed --add</code>.</p>
+      <label>History <select name="edition"><option value="">served history</option>${d.editions.map((e) => `<option>${esc(e.name)}</option>`).join("")}</select></label>
+      <label><input type="checkbox" name="all" checked> every repository at its head</label>
+      <label>or these, one <code>name</code> or <code>name@revision-or-label</code> per line <textarea name="repos" rows="3" placeholder="kop-v2-engine@kop-v2-engine-Calvin"></textarea></label>
+      <label>Date <input name="date" placeholder="MMDDYYYY (default today)" size="12"></label>
+      <button class="primary">Build</button></form>
+    <h3>Built seeds</h3><div id="exp"></div>`;
+  const drawExports = async () => {
+    const ex = await api("/packages/exports");
+    $("#exp").innerHTML = table(ex, [{ key: "file", render: (v) => `<a href="/api/packages/exports/${encodeURIComponent(v)}">${esc(v)}</a>` },
+      { key: "size", render: (v) => esc((v / 2 ** 20).toFixed(1)) + " MB" }, { key: "modified", label: "Built" },
+      { key: "file", label: "", render: (v) => `<button data-del="${esc(v)}">Delete</button>` }], { empty: "None yet." });
+    $$("button[data-del]").forEach((b) => (b.onclick = () => act(() => api("/packages/exports/" + encodeURIComponent(b.dataset.del), { method: "DELETE" }), () => "Deleted").then(drawExports)));
+  };
+  drawExports();
+  $("#bsf").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const repos = String(f.get("repos") || "").split("\n").map((x) => x.trim()).filter(Boolean)
+      .map((x) => ({ name: x.split("@")[0], revision: x.includes("@") ? x.slice(x.indexOf("@") + 1) : null }));
+    const all = f.get("all") === "on" && !repos.length;
+    await act(() => api("/packages/build", { body: { all, repos, edition: f.get("edition") || null, date: f.get("date") || null } }),
+      (x) => `Building ${x.file} (job ${x.job})`);
+    poll();
+  });
   const drawJobs = (jobs) => {
     $("#jobs").innerHTML = table(jobs, [{ key: "id" }, { key: "source", wrap: true }, { key: "status", render: (v) => pill(v, v === "done" ? "ok" : v === "failed" ? "bad" : "warn") },
       { key: "progress", label: "Last step", wrap: true, render: (v) => esc(v.length ? v[v.length - 1].m : "") }, { key: "started_at", label: "Started" }, { key: "finished_at", label: "Finished" }]);
@@ -526,6 +554,7 @@ routes.packages = async () => {
     const p = await api("/packages");
     drawJobs(p.jobs);
     if (p.jobs.some((j) => j.status === "running")) routes.packages.timer = setTimeout(poll, 3000);
+    else drawExports();
   };
   if (d.jobs.some((j) => j.status === "running")) poll();
 };

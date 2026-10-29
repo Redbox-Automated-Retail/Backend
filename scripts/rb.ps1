@@ -17,6 +17,7 @@
     rb.ps1 admin-in <dir> <args> same, in a one-off container with <dir> mounted at /in
     rb.ps1 import-store <path>   import a kiosk's "REDS\Update Manager\.store", a data-<date>.zip seed or a folder of seeds
     rb.ps1 import-packages [dir] import every data-*.zip seed in PACKAGES_DIR (or dir), read-only
+    rb.ps1 build-seed <dir> <args> admin build-seed with <dir> mounted read-write at /work (docs/seed-zips.md)
     rb.ps1 export-ca             copy ca.crt / ca.cer to certs\ for installing on kiosks
     rb.ps1 test                  run the protocol tests inside a container against the running stack
 
@@ -198,6 +199,16 @@ switch ($Command) {
         $envs = Env-Args @{ IOT_ADMIN_URL = "http://rb-iot:8081" }
         W run --rm --network $Network -v "$($Volumes.data):/data" -v "$($Volumes.certs):/certs" -v "${dir}:/in:ro" `
             @envs $Image python -m redbox_backend admin @($Rest[1..($Rest.Count - 1)])
+    }
+    "build-seed" {
+        # Installer seed (docs/seed-zips.md), with a host folder mounted read-write at /work for the output zip and
+        # any --add content: rb.ps1 build-seed D:\seeds /work --all   or   ... /work/data-01022030.zip --add r /work/new 'C:\...'
+        if (-not $Rest -or $Rest.Count -lt 2) { throw "usage: rb.ps1 build-seed <host folder> <admin build-seed args> (refer to the folder as /work)" }
+        New-Item -ItemType Directory -Force $Rest[0] | Out-Null
+        $dir = (Resolve-Path $Rest[0]).Path
+        $envs = Env-Args
+        W run --rm --network $Network -v "$($Volumes.data):/data" -v "$($Volumes.certs):/certs" -v "${dir}:/work" `
+            @envs $Image python -m redbox_backend admin build-seed @($Rest[1..($Rest.Count - 1)])
     }
     "import-store" {
         if (-not $Rest) { throw "usage: rb.ps1 import-store <.store folder | data-*.zip | folder of zips> [admin import-store options]" }

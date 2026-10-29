@@ -131,3 +131,32 @@ def test_reprovision_settings_download(client):
     doc = json.loads(r.text)
     assert doc["KioskId"] == 990123 and doc["Market"] == "m1" and doc["Hosts"]["Address"] == "10.1.2.3"
     assert doc["UrlRewrites"] == {"https://a": "https://b"} and doc["CaCertificate"].startswith("-----BEGIN")
+
+
+def test_build_seed_job_and_download(client, tmp_path):
+    import json
+    import time
+    import zipfile
+    from redbox_backend.updatesvc import seedzip
+    login(client)
+    name = "dash-seed-" + uuid.uuid4().hex[:6]
+    r = client.post(f"/api/updates/repos/{name}/publish", headers=H,
+                    data={"target_path": "C:\\Temp\\dashseed", "label": "one"},
+                    files=[("files", ("x.txt", b"seed me\n", "text/plain"))])
+    assert r.status_code == 200, r.text
+    r = client.post("/api/packages/build", headers=H, json={"repos": [{"name": name}], "date": "01022031"})
+    assert r.status_code == 200, r.text
+    job, file = r.json()["job"], r.json()["file"]
+    assert file == "data-01022031.zip"
+    for _ in range(100):
+        jobs = {j["id"]: j for j in client.get("/api/packages").json()["jobs"]}
+        if jobs[job]["status"] != "running":
+            break
+        time.sleep(0.2)
+    assert jobs[job]["status"] == "done", jobs[job]["progress"]
+    assert file in [e["file"] for e in client.get("/api/packages/exports").json()]
+    z = tmp_path / file
+    z.write_bytes(client.get(f"/api/packages/exports/{file}").content)
+    assert seedzip.check(z)["ok"]
+    assert json.loads(zipfile.ZipFile(z).read(f"{name}/.revlog/0"))["Label"] == "one"
+    assert client.delete(f"/api/packages/exports/{file}", headers=H).status_code == 200
