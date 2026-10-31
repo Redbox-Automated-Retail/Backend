@@ -229,7 +229,7 @@ async def kiosks():
 @app.get("/api/reprovision/{kiosk_id}.json")
 async def reprovision_profile(kiosk_id: int, address: Optional[str] = None, market: Optional[str] = None,
                               base_domain: Optional[str] = None, rewrite: List[str] = Query(default=[])):
-    """Settings file for kiosk/reprovision (`rb-reprovision apply`), as a download."""
+    """Settings file for software/src/Tools/Reprovision (`rb-reprovision apply`), as a download."""
     if not base_domain:
         address = address or config.BACKEND_PUBLIC_IP
     if market is None:

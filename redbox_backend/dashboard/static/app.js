@@ -384,10 +384,10 @@ routes.kiosk = async (id, tab = "overview") => {
   }
 };
 
-// Settings file for kiosk/reprovision: run `rb-reprovision apply <file>` on the kiosk (elevated).
+// Settings file for software/src/Tools/Reprovision: run `rb-reprovision apply <file>` on the kiosk (elevated).
 function reprovisionDialog(id, market) {
   const root = modal(`<h3>Reprovision a kiosk</h3>
-    <p class="muted">Downloads the settings file for <code>rb-reprovision apply</code> (kiosk/reprovision in the repository):
+    <p class="muted">Downloads the settings file for <code>rb-reprovision apply</code> (software/src/Tools/Reprovision in the repository):
     hosts entries, the backend CA, store ID, engine registry, Update Manager / Update Client / Kiosk Client / Device Service URLs.</p>
     <form id="rpf">
       <label>Kiosk (store) ID <input name="kiosk" required value="${esc(id)}" size="8"></label>
@@ -1703,7 +1703,7 @@ routes.provisioning = async (tab = "kiosks") => {
   const root = $("#pv");
   if (tab === "kiosks") {
     root.innerHTML = `<div class="grid2"><form id="isf" class="card"><div class="card-h"><h2>Installer settings</h2></div>
-        <p class="muted">The <code>settings.json</code> for <code>provisioning/installer/Install-Kiosk.ps1</code>. Put it in the installer payload with the kiosk's
+        <p class="muted">The <code>settings.json</code> for <code>software/installer/cli/Install-Kiosk.ps1</code>. Put it in the installer payload with the kiosk's
         reprovision file (<code>kiosk-&lt;id&gt;.json</code>) and a data zip.</p>
         <label>Store ID <input name="id" required type="number"></label>
         <label>Kiosk type <select name="kiosk_type"><option>R630</option><option>R620</option><option>R610</option></select></label>

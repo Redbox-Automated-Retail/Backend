@@ -650,7 +650,7 @@ docker compose exec -T rb-iot python -m redbox_backend admin kiosk-profile 74001
 - **The `--rewrite` pairs** become `UrlRewrites`. The tool applies them as plain text in the kiosk's config files:
   the engine's `data\*.config`, the clients' `appsettings*.json` and the Device Service data.
 
-On the kiosk (elevated), with `rb-reprovision.exe` (built on Windows by `kiosk\reprovision\build.ps1` into `kiosk\reprovision\out\`):
+On the kiosk (elevated), with `rb-reprovision.exe` (built on Windows by `software\src\Tools\Reprovision\build.ps1` into `software\src\Tools\Reprovision\out\`):
 
 ```bat
 rb-reprovision show  kiosk-74001.json
@@ -665,7 +665,7 @@ rb-reprovision status
 - restarts the Windows services whose files changed.
 
 The Kiosk Engine is not a service: restart it, or reboot the kiosk, so that it reads the new registry values.
-`revert` undoes all of it. See [kiosk/reprovision/README.md](../kiosk/reprovision/README.md).
+`revert` undoes all of it. See [software/src/Tools/Reprovision/README.md](../software/src/Tools/Reprovision/README.md).
 
 ### 8.3 Store installer (fresh kiosks)
 

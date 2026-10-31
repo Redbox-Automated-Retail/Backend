@@ -1,4 +1,4 @@
-# Point the sandboxed kiosk at the backend the way a real kiosk is reprovisioned (kiosk/reprovision):
+# Point the sandboxed kiosk at the backend the way a real kiosk is reprovisioned (software/src/Tools/Reprovision):
 #  1. baseline: the machine settings a real kiosk has (engine-registry.ps1, from a real kiosk's export), with the
 #     production broker URL (:443) and a placeholder store ID, as a kiosk is before it is reprovisioned;
 #  2. rb-reprovision apply: hosts entries for Redbox's host names -> this PC (relay.py on the Default Switch address),
