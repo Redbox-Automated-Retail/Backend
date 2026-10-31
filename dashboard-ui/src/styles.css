@@ -1,0 +1,63 @@
+@font-face { font-family: Montserrat; font-weight: 400; src: url(/fonts/montserrat-regular.ttf); font-display: swap; }
+@font-face { font-family: Montserrat; font-weight: 500; src: url(/fonts/montserrat-medium.ttf); font-display: swap; }
+@font-face { font-family: Montserrat; font-weight: 600; src: url(/fonts/montserrat-semibold.ttf); font-display: swap; }
+@font-face { font-family: Montserrat; font-weight: 700; src: url(/fonts/montserrat-bold.ttf); font-display: swap; }
+@font-face { font-family: Montserrat; font-weight: 800; src: url(/fonts/montserrat-extrabold.ttf); font-display: swap; }
+@font-face { font-family: Montserrat; font-weight: 900; src: url(/fonts/montserrat-black.ttf); font-display: swap; }
+
+:root {
+  --rb-red: #E42045;
+  --rb-bg: #0C0A0E;
+  --rb-panel: #151118;
+  --rb-line: #2B2531;
+  --rb-text: #F4F1F6;
+  --rb-text-2: #D6D0DC;
+  --rb-sel: linear-gradient(90deg, rgba(228, 32, 69, .48), rgba(121, 45, 141, .26));
+}
+html, body { background: var(--rb-bg); }
+body { color: var(--rb-text); }
+
+/* the kiosk UI's dot matrix, fading out down the page; panels sit on solid surfaces so text never sits on dots */
+.rb-dots::before {
+  content: ""; position: fixed; inset: 0 0 auto 0; height: 360px; pointer-events: none; z-index: 0;
+  background-image: radial-gradient(circle, rgba(255, 255, 255, .11) 1.1px, transparent 1.6px); background-size: 11px 11px;
+  -webkit-mask-image: linear-gradient(#000, transparent); mask-image: linear-gradient(#000, transparent);
+}
+.rb-main { position: relative; z-index: 1; }
+
+.rb-sidebar { background: linear-gradient(180deg, #1D0C24 0%, #13091A 55%, #0B060E 100%); border-right: 1px solid var(--rb-line); }
+.rb-nav-group { font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #E2D3EA; margin: 18px 12px 6px; }
+.rb-nav a.mantine-NavLink-root { border-radius: 8px; color: #EDE7F1; font-weight: 600; }
+.rb-nav a.mantine-NavLink-root:hover { background: rgba(255, 255, 255, .06); }
+.rb-nav a.mantine-NavLink-root[data-active] { background: var(--rb-sel); color: #fff; box-shadow: inset 3px 0 0 var(--rb-red); }
+
+.rb-logo { display: flex; align-items: center; gap: 9px; }
+.rb-logo .mark { width: 28px; height: 28px; border-radius: 7px; background: var(--rb-red); display: grid; place-items: center; font-weight: 900; font-size: 16px; color: #fff; padding-bottom: 2px; }
+.rb-logo .word { font-weight: 800; font-size: 19px; letter-spacing: -.02em; color: #fff; }
+.rb-logo .word i { color: var(--rb-red); font-style: normal; }
+
+/* data tables */
+.rb-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13.5px; }
+.rb-table thead th { position: sticky; top: 0; z-index: 2; background: #1A151E; text-align: left; font-size: 12px; font-weight: 700; color: #EDE7F1;
+  padding: 10px 14px; border-bottom: 1px solid var(--rb-line); white-space: nowrap; user-select: none; }
+.rb-table thead th.sortable { cursor: pointer; }
+.rb-table thead th.sortable:hover { color: #fff; background: #211A26; }
+.rb-table tbody td { padding: 9px 14px; border-bottom: 1px solid #221D27; color: var(--rb-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rb-table tbody tr.clickable { cursor: pointer; }
+.rb-table tbody tr.clickable:hover td, .rb-table tbody tr:focus-visible td { background: #1C1721; }
+.rb-table tbody tr:focus-visible { outline: 2px solid var(--rb-red); outline-offset: -2px; }
+.rb-num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* catalog posters */
+.rb-posters { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 14px; }
+.rb-poster { border-radius: 12px; overflow: hidden; background: #1A151E; border: 1px solid var(--rb-line); cursor: pointer; text-align: left; padding: 0; color: inherit; font: inherit; }
+.rb-poster:focus-visible, .rb-poster[data-selected] { outline: 3px solid var(--rb-red); outline-offset: 2px; }
+.rb-art { aspect-ratio: 2 / 3; position: relative; display: flex; align-items: flex-end; padding: 10px; font-weight: 900; font-size: 15px; line-height: 1.1; color: #fff;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, .7); overflow: hidden; }
+.rb-art img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.rb-art .fmt { position: absolute; top: 8px; left: 8px; z-index: 1; font-size: 10px; font-weight: 900; letter-spacing: .06em; padding: 3px 6px; border-radius: 4px;
+  background: #A21018; color: #fff; text-shadow: none; text-transform: uppercase; }
+.rb-art .fmt.blu { background: #1D5FB8; } .rb-art .fmt.game { background: #792D8D; } .rb-art .fmt.soon { background: #2a2626; } .rb-art .fmt.digital { background: #24704F; }
+
+.rb-console { background: #0A080C; border: 1px solid var(--rb-line); border-radius: 10px; padding: 10px 14px; font-family: ui-monospace, Consolas, monospace;
+  font-size: 12.5px; line-height: 1.75; max-height: 420px; overflow: auto; color: var(--rb-text); }

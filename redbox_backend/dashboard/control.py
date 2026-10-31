@@ -467,43 +467,49 @@ async def installer_settings(kiosk_id: int, kiosk_type: str = "R630", data_zip: 
 @router.get("/api/catalog/browse")
 async def catalog_browse(q: Optional[str] = None, types: Optional[str] = None, family: Optional[int] = None,
                          changed: bool = False, noart: bool = False, soon: bool = False, newest: bool = False,
-                         limit: int = 60, offset: int = 0):
+                         limit: int = 60, offset: int = 0, sort: Optional[str] = None, dir: str = "desc"):
     """The catalog's poster grid: titles filtered by platform / family (movies 1, games 2), changed since the last
     build, without box art or coming soon, with the discs of each in kiosks; and the counts for the filter chips."""
+    # t_name / t_type / t_release / t_image / key_num are stored columns (schema 70_dashboard.sql), so filtering, counting
+    # and sorting 11,000 titles never unpacks their values
     where, args = ["r.tbl = 'ProductCatalog'"], []
     if q and q.strip():
         q = q.strip()
         if q.isdigit():
-            where.append("(r.key = %s OR r.key IN (SELECT product_id::text FROM cloud_barcodes WHERE barcode = %s)"
-                         " OR r.value->>'long_name' ILIKE %s)")
+            where.append("(r.key = %s OR r.key IN (SELECT product_id::text FROM cloud_barcodes WHERE barcode = %s) OR r.t_name ILIKE %s)")
             args += [q, q, f"%{q}%"]
         else:
-            where.append("(r.value->>'long_name' ILIKE %s OR r.value->>'sort_name' ILIKE %s)")
-            args += [f"%{q}%", f"%{q}%"]
-    type_ids = [t for t in (types or "").split(",") if t.strip().isdigit()]
+            where.append("r.t_name ILIKE %s")
+            args.append(f"%{q}%")
+    type_ids = [int(t) for t in (types or "").split(",") if t.strip().isdigit()]
     if type_ids:
-        where.append("r.value->>'product_type_id' = ANY(%s)")
+        where.append("r.t_type = ANY(%s)")
         args.append(type_ids)
     if family:
-        where.append("(SELECT t.value->>'product_family_id' FROM catalog_rows t WHERE t.tbl = 'ProductType'"
-                     " AND t.key = r.value->>'product_type_id') = %s")
+        where.append("r.t_type IN (SELECT key_num FROM catalog_rows t WHERE t.tbl = 'ProductType' AND t.value->>'product_family_id' = %s)")
         args.append(str(family))
     stamped = await db.fetchval("SELECT stamped_at FROM catalog_state WHERE id=1")
     if changed:
         where.append("r.edited_at IS NOT NULL AND r.edited_at > coalesce(%s, '-infinity'::timestamptz)")
         args.append(stamped)
     if noart:
-        where.append("coalesce(r.value->>'image_file', '') = ''")
+        where.append("coalesce(r.t_image, '') = ''")
     if soon:
-        where.append("r.value->>'release_date' > to_char(now(), 'YYYYMMDDHH24MISS')")
+        where.append("r.t_release > to_char(now(), 'YYYYMMDDHH24MISS')")
     clause = " WHERE " + " AND ".join(where)
-    order = "r.value->>'release_date' DESC NULLS LAST" if newest or soon else \
-        "CASE WHEN r.key ~ '^[0-9]{1,18}$' THEN r.key::bigint END DESC NULLS LAST"
+    by = {"title": "lower(r.t_name)", "release": "r.t_release", "id": "r.key_num"}.get(sort or "", None)
+    if by is None:
+        by, dir = ("r.t_release", "desc") if newest or soon else ("r.key_num", dir)
+    order = f"{by} {'ASC' if dir == 'asc' else 'DESC'}" + ("" if by == "r.key_num" else " NULLS LAST") + ", r.key_num DESC"
+    outer = order.replace("r.key_num", "p.product_id").replace("r.t_name", "p.long_name").replace("r.t_release", "p.release_date")
+    # the page is picked on the stored columns alone; only its rows' values are unpacked (rating, accessory)
     rows = await db.fetch(
-        "SELECT r.key::bigint AS product_id, r.value->>'long_name' AS long_name, (r.value->>'product_type_id')::int AS product_type_id,"
-        " r.value->>'rating_id' AS rating_id, r.value->>'release_date' AS release_date, r.value->>'image_file' AS image_file,"
-        " r.value->>'sub_platform_id' AS sub_platform_id, r.edited_at"
-        f" FROM catalog_rows r{clause} ORDER BY {order} LIMIT %s OFFSET %s", *args, min(limit, 300), offset)
+        "SELECT p.*, c.value->>'rating_id' AS rating_id, c.value->>'sub_platform_id' AS sub_platform_id FROM ("
+        "SELECT r.key, r.key_num AS product_id, r.t_name AS long_name, r.t_type AS product_type_id, r.t_release AS release_date,"
+        f" r.t_image AS image_file, r.edited_at FROM catalog_rows r{clause} ORDER BY {order} LIMIT %s OFFSET %s) p"
+        " JOIN catalog_rows c ON c.tbl = 'ProductCatalog' AND c.key = p.key ORDER BY " + outer, *args, min(limit, 300), offset)
+    for r in rows:
+        r.pop("key")
     stock = {}
     if rows:
         for s in await db.fetch("SELECT b.product_id, count(*) AS discs, count(DISTINCT i.kiosk_id) AS kiosks"
@@ -518,10 +524,10 @@ async def catalog_browse(q: Optional[str] = None, types: Optional[str] = None, f
     counts = await db.fetchrow(
         "SELECT count(*) AS total,"
         " count(*) FILTER (WHERE edited_at IS NOT NULL AND edited_at > coalesce(%s, '-infinity'::timestamptz)) AS changed,"
-        " count(*) FILTER (WHERE coalesce(value->>'image_file', '') = '') AS noart,"
-        " count(*) FILTER (WHERE value->>'release_date' > to_char(now(), 'YYYYMMDDHH24MISS')) AS soon"
+        " count(*) FILTER (WHERE coalesce(t_image, '') = '') AS noart,"
+        " count(*) FILTER (WHERE t_release > to_char(now(), 'YYYYMMDDHH24MISS')) AS soon"
         " FROM catalog_rows WHERE tbl = 'ProductCatalog'", stamped)
-    by_type = await db.fetch("SELECT (value->>'product_type_id')::int AS product_type_id, count(*) AS n FROM catalog_rows"
+    by_type = await db.fetch("SELECT t_type AS product_type_id, count(*) AS n FROM catalog_rows"
                              " WHERE tbl = 'ProductCatalog' GROUP BY 1 ORDER BY 2 DESC")
     return srv.ok({"total": await db.fetchval(f"SELECT count(*) FROM catalog_rows r{clause}", *args), "rows": rows,
                    "counts": counts, "by_type": by_type, "stamped_at": stamped})
@@ -531,7 +537,7 @@ async def catalog_browse(q: Optional[str] = None, types: Optional[str] = None, f
 
 @router.get("/api/rentals")
 async def rentals(kind: str = "rentals", kiosk_id: Optional[str] = None, status: Optional[str] = None,
-                  q: Optional[str] = None, limit: int = 200, offset: int = 0):
+                  q: Optional[str] = None, limit: int = 200, offset: int = 0, sort: Optional[str] = None, dir: str = "desc"):
     """Rentals (cloud_rentals line items) or returns, with the catalog title of each disc. No amounts."""
     table, when = ("cloud_rentals x", "x.rented_at") if kind == "rentals" else ("cloud_returns x", "coalesce(x.return_date, x.created_at)")
     pid = "x.product_id" if kind == "rentals" else "(SELECT product_id FROM cloud_barcodes b WHERE b.barcode = x.barcode)"
@@ -545,123 +551,148 @@ async def rentals(kind: str = "rentals", kiosk_id: Optional[str] = None, status:
                      " AND value->>'long_name' ILIKE %s))")
         args += [q.strip(), f"%{q.strip()}%"]
     clause = (" WHERE " + " AND ".join(where)) if where else ""
+    order_col = {"when": when, "kiosk_id": "x.kiosk_id", "title": "lower(c.value->>'long_name')", "barcode": "x.barcode",
+                 "status": "x.status" if kind == "rentals" else when, "returned_at": "x.returned_at" if kind == "rentals" else when
+                 }.get(sort or "when", when)
+    order = f"{order_col} {'ASC' if dir == 'asc' else 'DESC'} NULLS LAST, x.id DESC"
     cols = ("x.id, x.kiosk_id, x.barcode, x.product_id, x.product_type, x.status, x.rented_at, x.returned_at, x.return_kiosk_id"
             if kind == "rentals" else f"x.id, x.kiosk_id, x.barcode, {pid} AS product_id, x.deck, x.slot, x.return_date, x.created_at")
     rows = await db.fetch(
         f"SELECT {cols}, c.value->>'long_name' AS title, t.value->>'product_type_name' AS type FROM {table}"
         f" LEFT JOIN catalog_rows c ON c.tbl = 'ProductCatalog' AND c.key = ({pid})::text"
         " LEFT JOIN catalog_rows t ON t.tbl = 'ProductType' AND t.key = c.value->>'product_type_id'"
-        f"{clause} ORDER BY {when} DESC LIMIT %s OFFSET %s", *args, min(limit, 500), offset)
+        f"{clause} ORDER BY {order} LIMIT %s OFFSET %s", *args, min(limit, 500), offset)
     return srv.ok({"total": await db.fetchval(f"SELECT count(*) FROM {table}{clause}", *args), "rows": rows})
 
 
 # ------------------------------------------------------------------------------------------- stores
 # Store management: the profile.data tables Store, Banner and Market (catalog/stores.py), built into profile.data
-# with the catalog, and the stores offered to the kiosk installer.
+# with the catalog, and the stores offered to the kiosk installer. Dates come in as ISO dates, times as "HH:mm".
 
-def _stores_call(fn):
-    async def run(*a, **kw):
-        from ..catalog import stores as st
-        try:
-            return await fn(st, *a, **kw)
-        except st.StoreError as e:
-            raise HTTPException(400, str(e))
-    return run
+from ..catalog import stores as st  # noqa: E402
+
+
+def _bool(v):
+    return None if v in (None, "") else str(v).lower() in ("1", "true", "yes")
+
+
+async def _store_call(coro):
+    try:
+        return await coro
+    except st.StoreError as e:
+        raise HTTPException(400, str(e))
 
 
 @router.get("/api/stores")
-async def stores_list(q: Optional[str] = None, offered: Optional[str] = None, limit: int = 100, offset: int = 0):
-    from ..catalog import stores as st
-    return srv.ok(await st.search(q, None if offered in (None, "") else offered == "1", limit, offset))
+async def stores_list(q: Optional[str] = None, offered: Optional[str] = None, state: Optional[str] = None,
+                      banner_id: Optional[str] = None, market_id: Optional[str] = None, has_kiosk: Optional[str] = None,
+                      sort: Optional[str] = None, dir: str = "asc", limit: int = 100, offset: int = 0):
+    return srv.ok(await st.search(q, _bool(offered), limit, offset, sort, dir, state, banner_id, market_id, _bool(has_kiosk)))
+
+
+@router.get("/api/stores/stats")
+async def stores_stats():
+    return srv.ok(dict(await st.stats(), present=sorted(await st.tables_present())))
 
 
 @router.get("/api/stores/lookups")
 async def stores_lookups():
-    from ..catalog import stores as st
-    d = await st.lookups()
-    d["jobs"] = await db.fetch("SELECT * FROM upd_import_jobs WHERE source LIKE 'stores%%' ORDER BY id DESC LIMIT 5")
-    d["counts"] = await db.fetchrow(
-        "SELECT (SELECT count(*) FROM catalog_rows WHERE tbl = 'Store') AS stores,"
-        " (SELECT count(*) FROM catalog_rows WHERE tbl = 'Banner') AS banners,"
-        " (SELECT count(*) FROM catalog_rows WHERE tbl = 'Market') AS markets,"
-        " (SELECT count(*) FROM cloud_installer_kiosks WHERE pending) AS offered")
-    return srv.ok(d)
+    return srv.ok(await st.lookups())
 
 
-@router.post("/api/stores")
-async def store_save(body: dict):
-    @_stores_call
-    async def run(st):
-        value = await st.save_store(body)
-        if "offered" in body:
-            await st.set_offer(value["store_id"], bool(body["offered"]), body.get("due_time") or None,
-                               body.get("kaseya_market_name") or None)
-        await db.record_event(value["store_id"], "dashboard", "store-save", {"store": value["store_id"], "by": _who()})
-        return srv.ok({"saved": value["store_id"], "store": value})
-    return await run()
-
-
-@router.post("/api/stores/offer")
-async def store_offer(body: dict):
-    @_stores_call
-    async def run(st):
-        await st.set_offer(body["store_id"], bool(body.get("offered", True)), body.get("due_time"), body.get("kaseya_market_name"))
-        return srv.ok({"store": body["store_id"], "offered": bool(body.get("offered", True))})
-    return await run()
-
-
-@router.post("/api/stores/delete")
-async def store_delete(body: dict):
-    @_stores_call
-    async def run(st):
-        return srv.ok({"deleted": await st.delete_store(int(body["store_id"]))})
-    return await run()
-
-
-@router.get("/api/stores/{kind}")
-async def stores_named(kind: str, q: Optional[str] = None):
-    if kind not in ("banners", "markets"):
-        raise HTTPException(404)
-    tbl, field = ("Banner", "banner") if kind == "banners" else ("Market", "market")
-    where, args = "", []
-    if q:
-        where, args = f" AND (r.value->>'{field}_name' ILIKE %s OR r.key = %s)", [f"%{q}%", q]
-    rows = await db.fetch(
-        f"SELECT r.key::bigint AS id, r.value->>'{field}_name' AS name, r.edited_at,"
-        f" (SELECT count(*) FROM catalog_rows s WHERE s.tbl = 'Store' AND s.value->>'{field}_id' = r.key) AS stores"
-        f" FROM catalog_rows r WHERE r.tbl = %s AND r.key ~ '^[0-9]{{1,18}}$'{where} ORDER BY r.value->>'{field}_name'"
-        " LIMIT 500", tbl, *args)
-    return srv.ok(rows)
-
-
-@router.post("/api/stores/{kind}")
-async def stores_named_save(kind: str, body: dict):
-    if kind not in ("banners", "markets"):
-        raise HTTPException(404)
-
-    @_stores_call
-    async def run(st):
-        key = await st.save_named(st.BANNER if kind == "banners" else st.MARKET, body.get("id"), body.get("name"))
-        return srv.ok({"saved": key})
-    return await run()
-
-
-@router.get("/api/stores-installer")
+@router.get("/api/stores/installer")
 async def stores_installer():
     return srv.ok(await db.fetch("SELECT i.*, k.last_seen_at FROM cloud_installer_kiosks i LEFT JOIN kiosks k"
                                  " ON k.kiosk_id = i.id ORDER BY i.pending DESC, i.state_name, i.banner_name, i.id"))
 
 
-_store_tasks = set()
+@router.get("/api/stores/{store_id}")
+async def store_get(store_id: int):
+    s = await st.get_store(store_id)
+    if s is None:
+        raise HTTPException(404, f"no store {store_id}")
+    return srv.ok(s)
 
 
-@router.post("/api/stores-import")
-async def stores_import(body: dict):
-    """Replace Store / Banner / Market with a seed's (a dvd-data revision, default the served head), in the background."""
-    from ..catalog import stores as st
-    revision = (body.get("revision") or "").strip() or None
-    job = await db.fetchval("INSERT INTO upd_import_jobs (source, options) VALUES (%s,%s) RETURNING id",
-                            f"stores from dvd-data@{revision or 'served head'}", db.jsonb({"kind": "stores", "revision": revision}))
+async def _save_store(body):
+    value = await _store_call(st.save_store(body))
+    if "offered" in body:
+        await _store_call(st.set_offer(value["store_id"], bool(body["offered"]), body.get("due_time") or None,
+                                       body.get("kaseya_market_name") or None))
+    await db.record_event(value["store_id"], "dashboard", "store-save", {"store": value["store_id"], "by": _who()})
+    return srv.ok(await st.get_store(value["store_id"]))
+
+
+@router.post("/api/stores")
+async def store_create(body: dict):
+    try:
+        sid = int(body.get("store_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "store ID (a number) required")
+    if await st.get_store(sid):
+        raise HTTPException(409, f"store {sid} already exists")
+    return await _save_store(body)
+
+
+@router.put("/api/stores/{store_id}")
+async def store_update(store_id: int, body: dict):
+    if not await st.get_store(store_id):
+        raise HTTPException(404, f"no store {store_id}")
+    return await _save_store(dict(body, store_id=store_id))
+
+
+@router.post("/api/stores/{store_id}/offer")
+async def store_offer(store_id: int, body: dict):
+    await _store_call(st.set_offer(store_id, bool(body.get("offered", True)), body.get("due_time"), body.get("kaseya_market_name")))
+    return srv.ok({"store": store_id, "offered": bool(body.get("offered", True))})
+
+
+@router.delete("/api/stores/{store_id}")
+async def store_delete(store_id: int):
+    n = await _store_call(st.delete_store(store_id))
+    if not n:
+        raise HTTPException(404, f"no store {store_id}")
+    await db.record_event(store_id, "dashboard", "store-delete", {"store": store_id, "by": _who()})
+    return srv.ok({"deleted": store_id})
+
+
+def _named_routes(kind, tbl):
+    """List / usage / create / rename / delete for /api/banners and /api/markets."""
+    async def listing(q: Optional[str] = None, sort: str = "name", dir: str = "asc", limit: int = 100, offset: int = 0):
+        return srv.ok(await st.named_list(tbl, q, limit, offset, sort, dir))
+
+    async def usage(key: int):
+        return srv.ok({"stores": await st.named_usage(tbl, key)})
+
+    async def create(body: dict):
+        return srv.ok({"id": await _store_call(st.save_named(tbl, None, body.get("name")))})
+
+    async def update(key: int, body: dict):
+        return srv.ok({"id": await _store_call(st.save_named(tbl, key, body.get("name")))})
+
+    async def delete(key: int, reassign_to: Optional[int] = None, clear: bool = False):
+        moved = await _store_call(st.delete_named(tbl, key, reassign_to, clear))
+        await db.record_event(None, "dashboard", f"{kind[:-1]}-delete", {"id": key, "moved": moved, "to": reassign_to, "by": _who()})
+        return srv.ok({"deleted": key, "moved": moved})
+
+    router.add_api_route(f"/api/{kind}", listing, methods=["GET"])
+    router.add_api_route(f"/api/{kind}/{{key}}/usage", usage, methods=["GET"])
+    router.add_api_route(f"/api/{kind}", create, methods=["POST"])
+    router.add_api_route(f"/api/{kind}/{{key}}", update, methods=["PUT"])
+    router.add_api_route(f"/api/{kind}/{{key}}", delete, methods=["DELETE"])
+
+
+_named_routes("banners", st.BANNER)
+_named_routes("markets", st.MARKET)
+
+# ------------------------------------------------------------------------------------ administration
+# Admin-only, long-running operations (System administration page): every import / build job and the stores import.
+
+_admin_tasks = set()
+
+
+async def _job(source, options, fn):
+    job = await db.fetchval("INSERT INTO upd_import_jobs (source, options) VALUES (%s,%s) RETURNING id", source, db.jsonb(options))
 
     async def progress(msg):
         await db.execute("UPDATE upd_import_jobs SET progress = progress || %s WHERE id=%s",
@@ -669,12 +700,35 @@ async def stores_import(body: dict):
 
     async def run():
         try:
-            await st.import_tables(revision=revision, progress=progress)
+            await fn(progress)
             await db.execute("UPDATE upd_import_jobs SET status='done', finished_at=now() WHERE id=%s", job)
         except Exception as e:
             await progress(f"failed: {e}")
             await db.execute("UPDATE upd_import_jobs SET status='failed', finished_at=now() WHERE id=%s", job)
     task = asyncio.create_task(run())
-    _store_tasks.add(task)
-    task.add_done_callback(_store_tasks.discard)
+    _admin_tasks.add(task)
+    task.add_done_callback(_admin_tasks.discard)
+    return job
+
+
+@router.get("/api/admin/jobs")
+async def admin_jobs(limit: int = 30):
+    return srv.ok(await db.fetch("SELECT * FROM upd_import_jobs ORDER BY id DESC LIMIT %s", min(limit, 200)))
+
+
+@router.get("/api/admin/jobs/{job_id}")
+async def admin_job(job_id: int):
+    j = await db.fetchrow("SELECT * FROM upd_import_jobs WHERE id=%s", job_id)
+    if j is None:
+        raise HTTPException(404)
+    return srv.ok(j)
+
+
+@router.post("/api/admin/stores-import")
+async def admin_stores_import(body: dict):
+    """Replace Store / Banner / Market with a seed's (a dvd-data revision, default the served head), in the background."""
+    revision = (body.get("revision") or "").strip() or None
+    job = await _job(f"stores from dvd-data@{revision or 'served head'}", {"kind": "stores", "revision": revision},
+                     lambda p: st.import_tables(revision=revision, progress=p))
+    await db.record_event(None, "dashboard", "stores-import", {"job": job, "revision": revision, "by": _who()})
     return srv.ok({"job": job})

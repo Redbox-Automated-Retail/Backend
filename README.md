@@ -68,7 +68,7 @@ One Python 3.12 image (`Dockerfile`) holds all services; the code is in `redbox_
 | `cloudapi/` | FastAPI app; `routers/` one module per upstream API |
 | `certs.py`, `kioskcrypto.py` | Local CA and certificates; the Update Client's password and EncryptType1 schemes |
 | `admin/cli.py` | Operator CLI (`rb.ps1 admin ...`) |
-| `dashboard/` | Admin dashboard: `server.py` (login, JSON API), `control.py` (health, fleet, accounts, provisioning, catalog browse), `auth.py` (logins and roles), `static/` (single-page UI, no build step) |
+| `dashboard/` | Admin dashboard: `server.py` (login, JSON API, serves the built UI), `control.py` (health, fleet, stores, accounts, provisioning, catalog browse, admin jobs), `geocode.py` (address search), `auth.py` (logins and roles); the UI itself is `dashboard-ui/` (React), built into `static/` |
 | `schema/*.sql` | Idempotent schema, applied at start-up by every service |
 | `remoting/` | The Mono host (`src/RemotingHost.cs`), its build (`build.sh`: the kiosk's own `KioskShared` and `KioskServices.ComponentModel` sources compiled so type and assembly names match, plus the GenuineChannels patch in `tools/`) |
 
@@ -478,11 +478,19 @@ at once. Every changing request is written to the **Audit log** (user, role, met
 The look follows the kiosk UI (Redbox.Rental.UI: Montserrat, rubine red). The kiosks cannot take real payments, so
 the dashboard shows rentals and returns but no money.
 
+**Frontend.** The UI is a React app in `dashboard-ui/` (Vite, TypeScript, Mantine, TanStack Query / Table / Virtual,
+react-router, zod; conventions in `dashboard-ui/BUILDING.md`). `docker compose build` compiles it in the image's Node
+stage into `redbox_backend/dashboard/static` (git-ignored), so the server needs no Node. Every list is sorted, filtered
+and paged by the server and scrolled virtually, so the 76,000 stores and 11,000 titles of a real catalog stay quick;
+filters, sorting and tabs are in the URL. Dates and times are always pickers (the server stores them the way
+profile.data needs them). Store addresses can be looked up by the server: OpenStreetMap (Photon) by default, Google
+Maps with `GOOGLE_MAPS_API_KEY` (`.env.example`). For development: `cd dashboard-ui; npm ci; npm run build` (or
+`npm run dev`, which proxies `/api` to `RB_DASHBOARD_URL`, default `http://127.0.0.1:8443`).
 | Page | What it shows / does |
 |---|---|
 | Overview | Kiosks online (MQTT or seen in the last 20 min) / stale / offline, rentals today, discs out, open reservations |
 | Kiosks | Every kiosk sorted by status: location, last seen, engine and Update Client versions, configuration version, discs; filter, tick several and send one IoT command to all of them |
-| Stores | Store management. Stores are physical locations; a kiosk is the machine set up as one. **Stores**, **Banners** and **Markets** are the profile.data tables `Store`, `Banner` and `Market` (76k stores in a real seed): search, add and edit them (address, state, banner, market, tax rates, return time, open date), and they are written into profile.data with the catalog on the next build. **Import from seed data** replaces just those three tables from a `dvd-data` revision (every imported data zip is one). **Kiosk installer**: the stores offered during setup (Proxy API `/api/installer/getpending*`: state, banner, store; `getopsmarket`), made from the Store row so the two agree; stop offering a store once its kiosk is installed |
+| Stores | Store management. Stores are physical locations; a kiosk is the machine set up as one. **Stores**, **Banners** and **Markets** are the profile.data tables `Store`, `Banner` and `Market` (76k stores in a real seed): search, add and edit them (address, state, banner, market, tax rates, return time, open date), and they are written into profile.data with the catalog on the next build. **System administration > Stores import** replaces just those three tables from a `dvd-data` revision (every imported data zip is one). **Kiosk installer**: the stores offered during setup (Proxy API `/api/installer/getpending*`: state, banner, store; `getopsmarket`), made from the Store row so the two agree; stop offering a store once its kiosk is installed |
 | Kiosk detail | Tabs: overview (key facts, software, recent activity), software (repositories, file sets, reported versions, deployments), inventory, rentals, reservations, commands (history of every IoT request and answer), files (peek, upload, uploaded files), events, settings (market, banner, time zone, location; reprovision file, installer settings, IoT certificates); Ping, push configuration, file-set check, clock sync, reboot |
 | System health | Every service's health and answer time, certificates and their expiry, the `.env` settings in effect (no secrets), largest tables, disk |
 | Rentals & returns | Discs rented, bought and returned, with the title of each, by kiosk, status, barcode or title |
@@ -492,7 +500,7 @@ the dashboard shows rentals and returns but no money.
 | Event tickets | Events, productions, ticket groups and prices, price codes, orders, seat locks, delivery methods, notifications |
 | Catalog | Poster grid with filters (new releases, formats, games per platform, coming soon, changed since the last build, no box art) and a details pane; games get their platform, ESRB rating, accessory (Kinect, Move, Wii Fit, ...), players and game genres; full editor, product groups, barcodes, other profile.data tables, import and publish ([docs/catalog.md](docs/catalog.md)) |
 | Inventory | Discs per kiosk (filter by kiosk) |
-| Data zips | The `data-<date>.zip` seeds in `PACKAGES_DIR`: import selected ones in the background with progress, list editions, build a seed zip |
+| System administration | Admin-only bulk operations: **Data zips** (the update-store seeds in `PACKAGES_DIR`: import with progress, editions, build a seed zip, built seeds), **Catalog import**, **Stores import** (Store / Banner / Market from a seed), and every background job with its log |
 | Releases | Our own builds ([docs/releases.md](docs/releases.md)): repository list; who gets what (default, market and store rollouts), stores up to date; publish a release zip (unreleased), roll out to a store, a market or everyone, roll back (revert revision when stores already took it), per-store status, history |
 | Update Service | Repositories (revisions, head, label, snapshot, how many stores are current); publish a new revision by uploading files or a folder; rebuild a snapshot; auto-subscribe switch; store x repository matrix showing current / behind / missing and link / unlink / automatic per cell |
 | File sets | Create file sets, upload revisions (with dependencies), deploy to a kiosk, market or all on the Update Client (pushed at once) or updatemgrd channel with an activation window; kiosk states per file set |
