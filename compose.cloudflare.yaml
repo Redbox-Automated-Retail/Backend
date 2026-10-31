@@ -1,0 +1,15 @@
+# Cloudflare (Flexible SSL) deployment on top of compose.yaml; see docs/deploy-linux.md.
+#   COMPOSE_FILE=compose.yaml:compose.cloudflare.yaml   (in .env, so plain `docker compose ...` uses both)
+#
+# Cloudflare reaches this host on plain HTTP port 80, where the host's nginx (deploy/nginx/redbox-cloudflare.conf)
+# routes by host name to rb-cloudapi and rb-admin on loopback ports. Kiosks still reach the non-HTTP services
+# directly through DNS-only names: 7002 and 7080 (rb-updatesvc), 8883 (rb-iot), 7890 (rb-remoting).
+services:
+  rb-cloudapi:
+    ports: !override
+      - "127.0.0.1:8080:80"     # plain HTTP: what nginx (and so Cloudflare) talks to
+      - "127.0.0.1:8444:443"    # its own TLS listener, for local checks only
+
+  rb-admin:
+    environment:
+      ADMIN_TLS: "false"        # Cloudflare terminates TLS; nginx forwards plain HTTP from loopback

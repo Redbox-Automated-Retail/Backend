@@ -92,7 +92,9 @@ git submodule update --init
 ## Deploying with Docker Compose (production)
 
 On a Docker host (a Linux server with Docker Engine and Compose v2.24 or newer), `compose.yaml` runs the
-whole stack:
+whole stack. For an internet-facing server behind Cloudflare, see
+**[docs/deploy-linux.md](docs/deploy-linux.md)**: domain and DNS records, Cloudflare settings (Flexible SSL), nginx
+(`deploy/nginx/`), `compose.cloudflare.yaml`, the firewall, the kiosk side, backups and troubleshooting.
 
 ```sh
 git clone --recurse-submodules git@github.com:Redbox-Automated-Retail/Backend.git && cd Backend
