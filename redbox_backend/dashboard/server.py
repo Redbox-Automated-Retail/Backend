@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import pathlib
+import shutil
 import tempfile
 import time
 import urllib.error
@@ -765,7 +766,7 @@ async def packages_build(body: dict):
     """Build an installer seed (updatesvc/seedzip.py) into DATA_DIR/exports in the background.
 
     body: {"repos": [{"name": .., "revision": hash prefix | label | null}] or "all": true, "edition": name | null,
-           "date": "MMDDYYYY" | null}
+           "date": "MMDDYYYY" | null, "catalog": true to add the catalog, built now, as a dvd-data revision}
     """
     from ..updatesvc import seedzip
     edition = body.get("edition") or None
@@ -788,14 +789,24 @@ async def packages_build(body: dict):
                          db.jsonb([{"t": dt.datetime.now(dt.timezone.utc).isoformat(), "m": msg}]), job)
 
     async def run():
+        work = None
         try:
-            s = await seedzip.build(out, specs, when=when, progress=progress)
+            additions = []
+            if body.get("catalog"):
+                from ..catalog import publish as cpub, store as cstore
+                work = cpub.work_dir()
+                files, _ = await cpub.build_for_seed(work, progress=progress)
+                additions.append((cstore.REPO, files, "catalog-" + dt.datetime.now().strftime("%Y%m%d-%H%M")))
+            s = await seedzip.build(out, specs, additions, when=when, progress=progress)
             await progress(f"wrote {name}: {s['bytes'] // 2**20} MB, SHA-1 {s['sha1']}")
             await db.execute("UPDATE upd_import_jobs SET status='done', finished_at=now() WHERE id=%s", job)
         except Exception as e:
             log.exception("seed build failed")
             await progress(f"failed: {e}")
             await db.execute("UPDATE upd_import_jobs SET status='failed', finished_at=now() WHERE id=%s", job)
+        finally:
+            if work:
+                shutil.rmtree(work, ignore_errors=True)
     task = asyncio.create_task(run())
     _import_tasks.add(task)
     task.add_done_callback(_import_tasks.discard)

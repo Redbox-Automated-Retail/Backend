@@ -14,9 +14,10 @@ Update Service (legacy updatemgrd):
   publish <repo> <dir> --target-path 'C:\\Program Files\\...' [--label L]
                                      add a revision from a local directory (deltas via xdelta3)
   build-seed <out.zip> [--repo NAME[@REV] ... | --all] [--edition NAME] [--add REPO DIR TARGET_PATH ...]
-             [--label REPO=LABEL ...] [--no-deltas] [--retarget OLD=NEW ...] [--date MMDDYYYY]
+             [--label REPO=LABEL ...] [--no-deltas] [--retarget OLD=NEW ...] [--date MMDDYYYY] [--catalog]
                                      write an installer seed (data-<MMDDYYYY>.zip) of repositories at chosen
-                                     revisions plus new content; format in docs/seed-zips.md
+                                     revisions plus new content (--catalog: the catalog, built now, as a
+                                     dvd-data revision); format in docs/seed-zips.md
   check-seed <zip> [--compare REFERENCE.zip] [--no-apply]
                                      check a seed as updatemgrd would use it (any seed, real or built)
   repos                              list repositories and heads
@@ -352,12 +353,25 @@ async def cmd_build_seed(args):
     out = pathlib.Path(args.out)
     if out.is_dir():
         out = out / seedzip.default_name(when.date() if when else None)
+    retarget = [r.split("=", 1) for r in args.retarget or []]
+    work = None
     try:
-        summary = await seedzip.build(out, specs, additions, when=when, retarget=[r.split("=", 1) for r in args.retarget or []],
+        if args.catalog:
+            # the catalog as it is now, as a dvd-data revision on top of the repository's history
+            from ..catalog import publish, store
+            work = publish.work_dir()
+            files, _ = await publish.build_for_seed(work, progress=_print)
+            additions.append((store.REPO, [(seedzip._retarget(tp, retarget), tn, p) for tp, tn, p in files],
+                              labels.get(store.REPO) or "catalog-" + dt.datetime.now().strftime("%Y%m%d-%H%M")))
+        summary = await seedzip.build(out, specs, additions, when=when, retarget=retarget,
                                       deltas=not args.no_deltas, allow_placeholders=args.allow_placeholders,
                                       progress=lambda m: print(m, file=sys.stderr, flush=True))
     except seedzip.SeedError as e:
         sys.exit(str(e))
+    finally:
+        if work:
+            import shutil
+            shutil.rmtree(work, ignore_errors=True)
     print(json.dumps(summary, indent=2))
 
 
@@ -638,7 +652,9 @@ def parser():
     p.add_argument("--label", action="append", help="REPO=LABEL for the revision --add creates")
     p.add_argument("--no-deltas", action="store_true"); p.add_argument("--retarget", action="append")
     p.add_argument("--date", help="MMDDYYYY: entry timestamps and default file name (default now)")
-    p.add_argument("--allow-placeholders", action="store_true"); p.set_defaults(fn=cmd_build_seed)
+    p.add_argument("--allow-placeholders", action="store_true")
+    p.add_argument("--catalog", action="store_true", help="add the catalog as built now as a dvd-data revision")
+    p.set_defaults(fn=cmd_build_seed)
     p = sub.add_parser("check-seed"); p.add_argument("zip"); p.add_argument("--compare")
     p.add_argument("--no-apply", action="store_true"); p.set_defaults(fn=cmd_check_seed)
     sub.add_parser("repos").set_defaults(fn=cmd_repos)

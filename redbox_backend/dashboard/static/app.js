@@ -932,6 +932,7 @@ routes.packages = async () => {
       <code>admin build-seed --add</code>.</p>
       <label>History <select name="edition"><option value="">served history</option>${d.editions.map((e) => `<option>${esc(e.name)}</option>`).join("")}</select></label>
       <label><input type="checkbox" name="all" checked> every repository at its head</label>
+      <label><input type="checkbox" name="catalog"> add the catalog as it is now (a new dvd-data revision; see Catalog)</label>
       <label>or these, one <code>name</code> or <code>name@revision-or-label</code> per line <textarea name="repos" rows="3" placeholder="kop-v2-engine@kop-v2-engine-Calvin"></textarea></label>
       <label>Date <input name="date" placeholder="MMDDYYYY (default today)" size="12"></label>
       <button class="primary">Build</button></form>
@@ -950,7 +951,7 @@ routes.packages = async () => {
     const repos = String(f.get("repos") || "").split("\n").map((x) => x.trim()).filter(Boolean)
       .map((x) => ({ name: x.split("@")[0], revision: x.includes("@") ? x.slice(x.indexOf("@") + 1) : null }));
     const all = f.get("all") === "on" && !repos.length;
-    await act(() => api("/packages/build", { body: { all, repos, edition: f.get("edition") || null, date: f.get("date") || null } }),
+    await act(() => api("/packages/build", { body: { all, repos, edition: f.get("edition") || null, date: f.get("date") || null, catalog: f.get("catalog") === "on" } }),
       (x) => `Building ${x.file} (job ${x.job})`);
     poll();
   });
