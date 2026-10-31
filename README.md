@@ -105,7 +105,7 @@ cp .env.example .env            # host names, bind addresses, payment mode, PACK
 docker compose build            # redbox-backend:latest and redbox-remoting:latest (needs software/)
 docker compose up -d
 docker compose ps               # every service reports "healthy"
-docker compose run --rm -T rb-admin python -m redbox_backend.dashboard.auth   # type a password: prints its hash
+sh scripts/set-admin-password.sh   # dashboard login into .env (asks twice), then: docker compose up -d rb-admin
 ```
 
 | Service | Role | Ports (host) |
@@ -124,8 +124,9 @@ docker compose run --rm -T rb-admin python -m redbox_backend.dashboard.auth   # 
   (see Secrets), so the submodule must be checked out on the server too.
 - `PACKAGES_DIR` (default `./local/packages`) is mounted read-only into `rb-admin` for the dashboard's seed
   import.
-- The dashboard login: put `ADMIN_USERNAME=admin` and `ADMIN_PASSWORD_HASH='<hash>'` into `.env`, single-quoted
-  (the hash contains `$`, which Compose would otherwise interpolate), then `docker compose up -d`.
+- The dashboard login: `scripts/set-admin-password.sh [user]` writes `ADMIN_USERNAME` and
+  `ADMIN_PASSWORD_HASH='<hash>'` into `.env`, single-quoted (the hash contains `$`, which Compose would otherwise
+  interpolate), then `docker compose up -d rb-admin`.
 - Debug listeners (plain `rcp://` on 7012, plain MQTT on 1883):
   `docker compose -f compose.yaml -f compose.debug.yaml up -d`.
 - Operator commands run in a service container, e.g. `docker compose exec rb-iot python -m redbox_backend admin

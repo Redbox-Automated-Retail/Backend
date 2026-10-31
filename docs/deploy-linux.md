@@ -296,48 +296,39 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-Edit `.env`. These are the values this deployment needs; leave everything else at its example value unless you
-know why:
+Every setting below is already a line in `.env` (from `.env.example`). Change these and leave the rest at the
+example value unless you know why. They are listed in the order of the file:
+
+| Line in `.env` | Set to | Why |
+|---|---|---|
+| `#COMPOSE_FILE=...` | uncomment: `COMPOSE_FILE=compose.yaml:compose.cloudflare.yaml` | every `docker compose` command in this folder then uses the Cloudflare override |
+| `BIND_ADDRESS` | `0.0.0.0` (the example value) | the direct ports (7002, 7080, 8883, 7890) on every interface; the firewall decides who gets in (section 7) |
+| `EXTRA_HOSTNAMES` | the 14 names, below | your names in the backend's server certificate (see the note below) |
+| `UPDATE_CONTENT_BASE_URL` | `http://updatesvc.example.net:7080` | BITS downloads for updatemgrd: DNS-only name, direct to rb-updatesvc |
+| `S3_BASE_URL` | `https://files.example.net` | presigned S3 URLs |
+| `PAYMENT_MODE` | `approve`, `decline` or `rules` | card authorisation stand-in (section 10) |
+| `CLOUD_PUBLIC_BASE_URL` | `https://files.example.net` | base of planogram / asset / ad URLs (see the note below) |
+| `ADMIN_BIND_ADDRESS` | `127.0.0.1` (the example value) | nginx reaches the dashboard on loopback |
+| `ADMIN_TLS` | `false` | Cloudflare terminates TLS; `compose.cloudflare.yaml` sets this as well |
+| `PACKAGES_DIR` | `/srv/redbox/packages` | update-store seeds (`data-<date>.zip`) for the dashboard's import, mounted read-only |
+| `BACKEND_PUBLIC_IP` | `203.0.113.10` | the address the store installer (`installer start`) maps host names to |
+| `CLOUD_API_HTTP_PORT` | `80` (the example value) | rb-cloudapi's plain-HTTP listener inside the container: the one Cloudflare uses |
+| `CRL_URL` | `http://files.example.net/crl/ca.crl` | the CRL distribution point written into every certificate the CA issues; plain HTTP, through Cloudflare |
+
+The `EXTRA_HOSTNAMES` line, on one line:
 
 ```sh
-# Use the Cloudflare override as well, for every `docker compose` command run in this folder.
-COMPOSE_FILE=compose.yaml:compose.cloudflare.yaml
-
-# Direct ports (7002, 7080, 8883, 7890) on every interface; the firewall decides who gets in (section 7).
-BIND_ADDRESS=0.0.0.0
-
-# Your names in the backend's server certificate. Only the DNS-only names are strictly needed (Cloudflare does not
-# check the origin in Flexible mode), but kiosk-profile warns about any of the service names that is missing.
 EXTRA_HOSTNAMES=updatesvc.example.net,iot.example.net,iot-staging.example.net,broker.example.net,proxyservice.example.net,transactionservice.example.net,kioskinventory.example.net,dataservice.example.net,adserver.example.net,reels.example.net,iotcertificateservice.example.net,files.example.net,kioskservices.example.net,tickets.example.net
-
-# Presigned S3 URLs, and the base of planogram / asset / ad URLs. Cloudflare reaches rb-cloudapi over plain
-# HTTP, so without CLOUD_PUBLIC_BASE_URL those URLs would start with http://.
-S3_BASE_URL=https://files.example.net
-CLOUD_PUBLIC_BASE_URL=https://files.example.net
-
-# CRL distribution point written into every certificate the CA issues. Plain HTTP, through Cloudflare.
-CRL_URL=http://files.example.net/crl/ca.crl
-
-# BITS downloads for updatemgrd: DNS-only name, direct to rb-updatesvc.
-UPDATE_CONTENT_BASE_URL=http://updatesvc.example.net:7080
-
-# Store installer (installer start): the address it maps host names to.
-BACKEND_PUBLIC_IP=203.0.113.10
-
-# The dashboard sits behind nginx and Cloudflare (compose.cloudflare.yaml also sets this).
-ADMIN_TLS=false
-ADMIN_BIND_ADDRESS=127.0.0.1
-
-# rb-cloudapi's plain-HTTP listener: the one Cloudflare uses. Keep it on 80 (inside the container).
-CLOUD_API_HTTP_PORT=80
-
-# Update-store seeds (data-<date>.zip) for the dashboard's import, mounted read-only.
-PACKAGES_DIR=/srv/redbox/packages
-
-# Card authorisation stand-in: approve | decline | rules.
-PAYMENT_MODE=approve
 ```
 
+Notes on the table:
+
+- **`EXTRA_HOSTNAMES`:** only the DNS-only names are strictly needed (Cloudflare does not check the origin in
+  Flexible mode), but `kiosk-profile` warns about any service name that is missing.
+- **`CLOUD_PUBLIC_BASE_URL`:** Cloudflare reaches rb-cloudapi over plain HTTP, so without it those URLs would
+  start with `http://`.
+
+The dashboard login (`ADMIN_USERNAME`, `ADMIN_PASSWORD_HASH`) is set by a script in 5.5. Don't write it by hand.
 - **Changing `EXTRA_HOSTNAMES`, `EXTRA_IPS` or `CRL_URL` later.** `rb-certs` re-issues the server certificate on
   the next `docker compose up -d`. The CA stays the same, so kiosks need nothing new.
 - **Values containing `$`** (the dashboard password hash) must be single-quoted.
@@ -354,20 +345,17 @@ docker compose ps           # wait until every service is "healthy" (rb-certs: "
 Set the dashboard login. There is no default password:
 
 ```sh
-docker compose run --rm -T rb-admin python -m redbox_backend.dashboard.auth
-# type the password (at least 10 characters) twice; it prints a pbkdf2_sha256$... hash
+sh scripts/set-admin-password.sh          # user "admin"; or: sh scripts/set-admin-password.sh <user>
+docker compose up -d rb-admin             # recreate the dashboard with the new login
 ```
 
-Put the hash into `.env`, in single quotes, then recreate the dashboard:
+The script does the following:
+- asks for the password twice, and refuses one shorter than 10 characters;
+- hashes it in the `rb-admin` image (`python -m redbox_backend.dashboard.auth`, PBKDF2-SHA256);
+- replaces `ADMIN_USERNAME` and `ADMIN_PASSWORD_HASH` in `.env`. The hash is single-quoted, because it contains
+  `$`, which Compose would otherwise interpolate.
 
-```sh
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD_HASH='pbkdf2_sha256$310000$...'
-```
-
-```sh
-docker compose up -d rb-admin
-```
+It is the counterpart of `rb.ps1 set-admin-password`.
 
 The restart policy is `unless-stopped`, and the Docker service is enabled, so the stack comes back after a reboot
 by itself. No systemd unit of its own is needed.
@@ -548,7 +536,7 @@ docker compose exec -T rb-iot python -m redbox_backend admin kiosk-profile 74001
 - **The `--rewrite` pairs** become `UrlRewrites`. The tool applies them as plain text in the kiosk's config files:
   the engine's `data\*.config`, the clients' `appsettings*.json` and the Device Service data.
 
-On the kiosk (elevated), with `rb-reprovision.exe` from `kiosk/reprovision` (built by its `build.ps1`):
+On the kiosk (elevated), with `rb-reprovision.exe` (built on Windows by `kiosk\reprovision\build.ps1` into `kiosk\reprovision\out\`):
 
 ```bat
 rb-reprovision show  kiosk-74001.json
@@ -560,8 +548,9 @@ rb-reprovision status
 - installs the CA into the machine's Root store;
 - sets the registry (store ID, broker and Kiosk Services URLs);
 - rewrites updatemgrd's, the Update Client's, the Kiosk Client's and the Device Service's settings;
-- restarts the services.
+- restarts the Windows services whose files changed.
 
+The Kiosk Engine is not a service: restart it, or reboot the kiosk, so that it reads the new registry values.
 `revert` undoes all of it. See [kiosk/reprovision/README.md](../kiosk/reprovision/README.md).
 
 ### 8.3 Store installer (fresh kiosks)
