@@ -160,3 +160,8 @@ def test_build_seed_job_and_download(client, tmp_path):
     assert seedzip.check(z)["ok"]
     assert json.loads(zipfile.ZipFile(z).read(f"{name}/.revlog/0"))["Label"] == "one"
     assert client.delete(f"/api/packages/exports/{file}", headers=H).status_code == 200
+
+def test_catalog_import_refuses_a_seed_zip(client):
+    login(client)
+    r = client.post("/api/catalog/import", headers=H, json={"folder": "/packages/data-05072024.zip"})
+    assert r.status_code == 400 and "leave this field empty" in r.json()["detail"]

@@ -568,8 +568,11 @@ async function catalogPublish(root) {
       ${s.last_build ? `<p class="muted">Last: ${esc(s.last_build.revision ? s.last_build.revision.slice(0, 10) + " " + (s.last_build.label || "") : "no change")} for ${esc(s.last_build.scope)} ${esc(s.last_build.target || "")} (${esc(fmtDate(s.last_build.at))})</p>` : ""}</form>
     <form id="if" class="card mt"><b>Import</b><p class="muted">Replaces the catalog (titles, tables, box art and imported barcodes;
       barcodes added here or learned from kiosks are kept). About 3 minutes for a full kiosk catalog.</p>
-      <label>dvd-data revision <input name="revision" placeholder="served head (default), or hash / label"></label>
-      <label>or a folder in the rb-admin container with profile.data and inventory.data <input name="folder" placeholder="/packages/catalog"></label>
+      <p><b>Normally leave both fields empty:</b> the catalog is imported from the dvd-data served to kiosks, which is the
+      one the seed zips you imported on <a href="#/packages">Update packages</a> brought in. Do not enter a seed zip here.</p>
+      <label>dvd-data revision (optional) <input name="revision" placeholder="empty = the served head; or a hash / label"></label>
+      <label>or a folder (optional, advanced) inside the rb-admin container holding loose profile.data and inventory.data files
+        <input name="folder" placeholder="empty; e.g. /packages/catalog - not a .zip"></label>
       <button>Import</button></form></div></div>
     <h3>Catalog jobs</h3><div id="cj"></div>`;
   const drawJobs = (jobs) => {

@@ -431,7 +431,9 @@ to kiosks as a new `dvd-data` revision. It also fills `cloud_products` and `clou
 answer title and barcode questions from. docs/catalog.md has the details.
 
 After 5.7, on the dashboard: **Catalog**, then **Import & publish**, then **Import** (the default source is the
-`dvd-data` revision served to kiosks). Or with the CLI:
+`dvd-data` revision served to kiosks). Leave both fields empty: the seed imported in 5.7 already put its
+`dvd-data` there. The folder field is only for loose `profile.data` and `inventory.data` files inside the
+container; a seed zip such as `/packages/data-05072024.zip` is refused there. Or with the CLI:
 
 ```sh
 docker compose exec -T rb-iot python -m redbox_backend admin catalog-import     # served dvd-data head
