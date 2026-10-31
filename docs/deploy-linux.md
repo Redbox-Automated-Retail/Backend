@@ -310,7 +310,7 @@ example value unless you know why. They are listed in the order of the file:
 | `CLOUD_PUBLIC_BASE_URL` | `https://files.example.net` | base of planogram / asset / ad URLs (see the note below) |
 | `ADMIN_BIND_ADDRESS` | `127.0.0.1` (the example value) | nginx reaches the dashboard on loopback |
 | `ADMIN_TLS` | `false` | Cloudflare terminates TLS; `compose.cloudflare.yaml` sets this as well |
-| `PACKAGES_DIR` | `/srv/redbox/packages` | update-store seeds (`data-<date>.zip`) for the dashboard's import, mounted read-only |
+| `PACKAGES_DIR` | `/srv/redbox/packages` | the folder for Redbox's update-store seeds (`data-<MMDDYYYY>.zip`), mounted read-only into the dashboard; what they are and how to import them: 5.7 |
 | `BACKEND_PUBLIC_IP` | `203.0.113.10` | the address the store installer (`installer start`) maps host names to |
 | `CLOUD_API_HTTP_PORT` | `80` (the example value) | rb-cloudapi's plain-HTTP listener inside the container: the one Cloudflare uses |
 | `CRL_URL` | `http://files.example.net/crl/ca.crl` | the CRL distribution point written into every certificate the CA issues; plain HTTP, through Cloudflare |
@@ -370,6 +370,48 @@ mkdir -p ~/redbox-ca
 docker compose run --rm --no-deps -v ~/redbox-ca:/out rb-certs python -m redbox_backend certs --export /out
 ls ~/redbox-ca              # ca.crt (PEM), ca.cer (DER, for certutil on Windows)
 ```
+
+### 5.7 Import the update content (`PACKAGES_DIR`)
+
+A new backend serves no software or data to kiosks. That content comes from **Redbox's update-store seeds**:
+
+- **What they are.** The `data-<MMDDYYYY>.zip` files Redbox shipped with its store installer (13 of them, 2014 to
+  2024, are known; the README's "Update packages" section describes them).
+- **What a seed holds.** Every update repository a kiosk runs from:
+  - the Kiosk Engine and its bundles (`kop-v2-engine`, `kop-rental-bundles`, ...);
+  - updatemgrd itself;
+  - the Device Service;
+  - `dvd-data`, the kiosk's data files: `profile.data` (titles, product groups, markets, box art) and
+    `inventory.data` (barcode to title).
+- **Why import them.** Without them, the backend has nothing to offer when a kiosk asks for updates, and a freshly
+  installed kiosk gets nothing.
+
+`PACKAGES_DIR` is just the folder the dashboard reads them from. Put the zips directly in it (no subfolders), then
+import:
+
+```sh
+cp /wherever/they/are/data-*.zip /srv/redbox/packages/
+```
+
+Then, in the dashboard, go to **Update packages**, select the seeds (or all of them; they are imported oldest
+first) and click Import. Progress shows on the page. Or use the CLI:
+
+```sh
+docker compose run --rm -v /srv/redbox/packages:/in:ro rb-iot python -m redbox_backend admin import-store /in
+docker compose exec -T rb-iot python -m redbox_backend admin editions    # one edition per imported seed
+docker compose exec -T rb-iot python -m redbox_backend admin repos       # repositories and the heads served
+```
+
+- **`dvd-data`** is most of the volume, so by default only the newest seed's copy is imported (`--dvd-data
+  latest`, or the choice on the dashboard page).
+- **Kiosks that already have the content** report heads the backend now knows, and get only what is newer.
+- **The zips stay in `PACKAGES_DIR`** only as the import source; the imported content lives in the `rb-data`
+  volume.
+
+**What importing does not do.** It does not fill the dashboard's **Catalog** page (the backend's own
+`cloud_products` table). Kiosks browse and rent from their local `profile.data`, so they don't need it. The
+backend's catalog only feeds the cloud calls that look titles up (`api/product/bytitleids`, Product Reels).
+Barcodes are mapped to titles from the transactions kiosks report, as they happen.
 
 ## 6. nginx (reverse proxy)
 
