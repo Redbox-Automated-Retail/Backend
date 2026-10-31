@@ -64,9 +64,9 @@ async def put_row(tbl, key, value=None, text=None):
     if tbl == "Version" and len(text) > 64:
         raise EditError("Version values are VarChar(64)")
     await db.execute(
-        "INSERT INTO catalog_rows (tbl, key, ord, lua, value) VALUES (%s, %s,"
-        " (SELECT coalesce(max(ord), -1) + 1 FROM catalog_rows WHERE tbl=%s), %s, %s)"
-        " ON CONFLICT (tbl, key) DO UPDATE SET lua = EXCLUDED.lua, value = EXCLUDED.value",
+        "INSERT INTO catalog_rows (tbl, key, ord, lua, value, edited_at) VALUES (%s, %s,"
+        " (SELECT coalesce(max(ord), -1) + 1 FROM catalog_rows WHERE tbl=%s), %s, %s, now())"
+        " ON CONFLICT (tbl, key) DO UPDATE SET lua = EXCLUDED.lua, value = EXCLUDED.value, edited_at = now()",
         tbl, str(key), tbl, text, db.jsonb(lua.plain(parsed)))
     return parsed
 

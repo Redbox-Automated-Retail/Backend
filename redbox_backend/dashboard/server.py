@@ -82,11 +82,44 @@ async def _guard(request: Request, call_next):
             return JSONResponse({"error": f"a token with scope '{_ci_scope(request)}' is required"}, status_code=401)
         request.state.actor = f"token:{row['name']}"
     elif path.startswith("/api/") and path not in ("/api/login", "/api/status"):
-        if not auth.read_session(request.cookies.get(auth.COOKIE)):
+        session = auth.read_session(request.cookies.get(auth.COOKIE))
+        who = session and await auth.resolve(session)
+        if not who:
             return JSONResponse({"error": "login required"}, status_code=401)
-        if request.method not in ("GET", "HEAD") and request.headers.get("x-requested-with") != "rb-admin":
+        changing = request.method not in ("GET", "HEAD")
+        if changing and request.headers.get("x-requested-with") != "rb-admin":
             return JSONResponse({"error": "missing X-Requested-With"}, status_code=403)
+        denied = _role_denies(who["role"], request.method, path)
+        if denied:
+            return JSONResponse({"error": denied}, status_code=403)
+        auth.current.set(who)
+        response = await call_next(request)
+        if changing and path not in ("/api/logout",):
+            await db.record_event(None, "audit", f"{request.method} {path}",
+                                  {"user": who["user"], "role": who["role"], "status": response.status_code})
+        _secure_headers(response)
+        return response
     response = await call_next(request)
+    _secure_headers(response)
+    return response
+
+
+# Routes only an admin may change (accounts and API tokens); a viewer may change nothing but its own password.
+ADMIN_ONLY = ("/api/users", "/api/releases/tokens")
+SELF_SERVICE = ("/api/logout", "/api/me/password")
+
+
+def _role_denies(role, method, path):
+    if method in ("GET", "HEAD") or path in SELF_SERVICE or role == "admin":
+        return None
+    if role == "viewer":
+        return "your account is read-only (viewer)"
+    if any(path.startswith(p) for p in ADMIN_ONLY):
+        return "only an admin can change accounts and API tokens"
+    return None
+
+
+def _secure_headers(response):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Cache-Control"] = "no-store"
@@ -124,14 +157,16 @@ async def status():
 
 @app.post("/api/login")
 async def login(body: dict):
-    if not auth.check_login(body.get("username"), body.get("password")):
+    role = await auth.login(body.get("username"), body.get("password"))
+    if role is None:
         await asyncio.sleep(1.0)  # slow down guessing
         await db.record_event(None, "dashboard", "login-failed", {"username": body.get("username")})
-        return JSONResponse({"error": "wrong user name or password" if auth.configured()
+        configured = auth.configured() or await db.fetchval("SELECT count(*) FROM dash_users WHERE enabled")
+        return JSONResponse({"error": "wrong user name or password" if configured
                              else "no admin password is configured"}, status_code=401)
-    await db.record_event(None, "dashboard", "login", {"username": body.get("username")})
-    resp = JSONResponse({"user": auth.username()})
-    resp.set_cookie(auth.COOKIE, auth.make_session(auth.username()), httponly=True, samesite="strict",
+    await db.record_event(None, "dashboard", "login", {"username": body.get("username"), "role": role})
+    resp = JSONResponse({"user": body["username"], "role": role})
+    resp.set_cookie(auth.COOKIE, auth.make_session(body["username"]), httponly=True, samesite="strict",
                     secure=not app.state.plain, max_age=int(float(os.environ.get("ADMIN_SESSION_HOURS") or 8) * 3600))
     return resp
 
@@ -145,7 +180,8 @@ async def logout():
 
 @app.get("/api/me")
 async def me():
-    return {"user": auth.username()}
+    who = auth.current.get()
+    return {"user": who["user"], "role": who["role"], "bootstrap": who["user"] == auth.username()}
 
 
 # ----------------------------------------------------------------------------------------- overview
@@ -267,6 +303,29 @@ TABLES = {
     "reservations": ("cloud_reservations", ["reference_number"], "Reservations"),
     "rentals": ("cloud_rentals", ["id"], "Rentals"),
     "returns": ("cloud_returns", ["id"], "Returns"),
+    "customer_offers": ("cloud_customer_offers", ["offer_id"], "Customer offers (GetCustomerOffers)"),
+    "rbplus_campaigns": ("cloud_rbplus_promo_campaigns", ["promo_campaign_id"], "Redbox+ promo campaigns"),
+    "promo_redemptions": ("cloud_promo_redemptions", ["id"], "Promo code redemptions"),
+    "return_promo_issued": ("cloud_return_promo_issued", ["transaction_id"], "Return-visit codes issued"),
+    "points_ledger": ("cloud_points_ledger", ["id"], "Loyalty points ledger"),
+    "customer_subscriptions": ("cloud_customer_subscriptions", ["id"], "Customer subscriptions"),
+    "inventory_syncs": ("cloud_inventory_syncs", ["id"], "Inventory syncs"),
+    "ad_impressions": ("cloud_ad_impressions", ["id"], "Ad impressions"),
+    "assets": ("cloud_assets", ["asset_id"], "Media assets"),
+    "planograms": ("cloud_planograms", ["id"], "Planograms"),
+    "kiosk_sessions": ("cloud_kiosk_sessions", ["session_id"], "Kiosk sessions"),
+    "bluefin_devices": ("cloud_bluefin_devices", ["kiosk_id", "reader_serial"], "Bluefin card readers"),
+    "installer_kiosks": ("cloud_installer_kiosks", ["id"], "Kiosk installer: stores to install"),
+    "staff_users": ("cloud_staff_users", ["username"], "Field-staff logins (kiosk)"),
+    "ticket_events": ("ticket_events", ["event_id"], "Tickets: events"),
+    "ticket_productions": ("ticket_productions", ["production_id"], "Tickets: productions"),
+    "ticket_groups": ("ticket_groups", ["ticket_group_id"], "Tickets: ticket groups"),
+    "ticket_group_prices": ("ticket_group_prices", ["ticket_group_id", "price_code_id"], "Tickets: group prices"),
+    "ticket_price_codes": ("ticket_price_codes", ["production_id", "price_code_id"], "Tickets: price codes"),
+    "ticket_delivery_methods": ("ticket_delivery_methods", ["delivery_method_id"], "Tickets: delivery methods"),
+    "ticket_orders": ("ticket_orders", ["order_id"], "Tickets: orders"),
+    "ticket_locks": ("ticket_locks", ["lock_guid"], "Tickets: seat locks"),
+    "ticket_notifications": ("ticket_notifications", ["id"], "Tickets: notifications"),
 }
 _columns_cache = {}
 # Shown masked; an unchanged mask is not written back.
@@ -888,7 +947,8 @@ async def fileset_deploy(fs_id: int, body: dict):
 # The Releases page: the same operations as the admin CLI and the CI API (updatesvc/releases.py, docs/releases.md).
 
 def _actor():
-    return "dashboard:" + auth.username()
+    who = auth.current.get()
+    return "dashboard:" + (who["user"] if who else auth.username())
 
 
 @app.get("/api/releases")
@@ -1188,7 +1248,8 @@ async def catalog_lookups():
         return [dict(r["value"] or {}, key=r["key"]) for r in
                 await db.fetch("SELECT key, value FROM catalog_rows WHERE tbl=%s ORDER BY ord", name)]
     return ok({"types": await table("ProductType"), "ratings": await table("ProductRating"),
-               "genres": await table("Genres"), "families": await table("ProductFamily")})
+               "genres": await table("Genres"), "families": await table("ProductFamily"),
+               "subplatforms": await table("SubPlatform")})
 
 
 @app.get("/api/catalog/titles")
@@ -1510,8 +1571,8 @@ async def events(kiosk_id: Optional[int] = None, source: Optional[str] = None, k
         where.append("id < %s")
         args.append(before_id)
     if q:
-        where.append("payload::text ILIKE %s")
-        args.append(f"%{q}%")
+        where.append("(payload::text ILIKE %s OR kind ILIKE %s)")
+        args += [f"%{q}%", f"%{q}%"]
     clause = (" WHERE " + " AND ".join(where)) if where else ""
     return ok(await db.fetch(f"SELECT * FROM events{clause} ORDER BY id DESC LIMIT %s", *args, min(limit, 500)))
 
@@ -1524,6 +1585,9 @@ async def event_kinds():
 
 # ------------------------------------------------------------------------------------------- static
 
+from . import control  # noqa: E402  (control-center routes; must be added before the static mount)
+
+app.include_router(control.router)
 app.mount("/", StaticFiles(directory=STATIC, html=True), name="static")
 
 

@@ -404,7 +404,7 @@ import:
 cp /wherever/they/are/data-*.zip /srv/redbox/packages/
 ```
 
-Then, in the dashboard, go to **Update packages**, select the seeds (or all of them; they are imported oldest
+Then, in the dashboard, go to **Data zips**, select the seeds (or all of them; they are imported oldest
 first) and click Import. Progress shows on the page. Or use the CLI:
 
 ```sh
@@ -819,7 +819,7 @@ docker compose exec -T rb-iot python -m redbox_backend admin stores
 ```
 
 - **Seeds.** Copy `data-*.zip` files into `/srv/redbox/packages` (`PACKAGES_DIR`) and import them from the
-  dashboard's **Update packages** page. Or use the CLI, with the folder mounted:
+  dashboard's **Data zips** page. Or use the CLI, with the folder mounted:
 
   ```sh
   docker compose run --rm -v /srv/redbox/packages:/in:ro rb-iot python -m redbox_backend admin import-store /in

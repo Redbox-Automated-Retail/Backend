@@ -3,14 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Redbox Admin</title>
+<title>Redbox Control Center</title>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
 <div id="login" class="login hidden">
   <form id="login-form" class="card login-card">
-    <h1>Redbox Admin</h1>
-    <p class="muted">Self-hosted kiosk backend</p>
+    <div class="logo"><span class="mark">r.</span><span class="word">redbox<i>.</i></span></div>
+    <h2>Control center</h2>
+    <p class="muted" style="margin:6px 0 10px">Self-hosted kiosk backend</p>
     <label>User name <input id="login-user" name="username" autocomplete="username" value="admin" required></label>
     <label>Password <input id="login-pass" name="password" type="password" autocomplete="current-password" required></label>
     <button type="submit" class="primary">Log in</button>
@@ -18,39 +19,18 @@
   </form>
 </div>
 <div id="shell" class="shell hidden">
-  <nav class="side">
-    <div class="brand">Redbox Admin</div>
-    <a href="#/overview" data-nav="overview">Overview</a>
-    <a href="#/kiosks" data-nav="kiosks">Kiosks</a>
-    <div class="group">Inventory &amp; titles</div>
-    <a href="#/data/inventory" data-nav="data/inventory">Inventory</a>
-    <a href="#/catalog" data-nav="catalog">Catalog</a>
-    <a href="#/pricing" data-nav="pricing">Pricing &amp; promotions</a>
-    <div class="group">Business</div>
-    <a href="#/transactions" data-nav="transactions">Transactions</a>
-    <a href="#/data/reservations" data-nav="data/reservations">Reservations</a>
-    <a href="#/broker" data-nav="broker">Reservation broker</a>
-    <a href="#/data/customers" data-nav="data/customers">Customers</a>
-    <div class="group">Software</div>
-    <a href="#/releases" data-nav="releases">Releases</a>
-    <a href="#/updates" data-nav="updates">Update Service</a>
-    <a href="#/packages" data-nav="packages">Update packages</a>
-    <a href="#/filesets" data-nav="filesets">File sets</a>
-    <a href="#/config" data-nav="config">Configuration</a>
-    <a href="#/jobs" data-nav="jobs">Remote jobs</a>
-    <div class="group">Diagnostics</div>
-    <a href="#/logs" data-nav="logs">Logs &amp; events</a>
-    <a href="#/tables" data-nav="tables">All tables</a>
-  </nav>
-  <main>
-    <header class="top">
-      <h2 id="page-title"></h2>
-      <div class="right"><span id="me" class="muted"></span> <button id="logout">Log out</button></div>
-    </header>
-    <section id="view"></section>
-  </main>
+  <aside class="side">
+    <div class="logo"><span class="mark">r.</span><span class="word">redbox<i>.</i></span></div>
+    <div id="nav"></div>
+    <div class="foot">
+      <a id="health" class="health" href="#/system"><span class="dot off"></span>Checking services...</a>
+      <div class="me"><div class="avatar" id="me-avatar"></div><div><div class="who" id="me"></div><div class="role" id="me-role"></div></div>
+        <button id="logout" class="sm out" title="Log out">Log out</button></div>
+    </div>
+  </aside>
+  <main><section id="view"></section></main>
 </div>
-<div id="modal" class="modal hidden"><div class="modal-body card"><div id="modal-content"></div></div></div>
+<div id="modal" class="modal hidden"><div class="modal-body"><div id="modal-content"></div></div></div>
 <div id="toast" class="toast hidden"></div>
 <script src="app.js"></script>
 </body>

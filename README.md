@@ -68,7 +68,7 @@ One Python 3.12 image (`Dockerfile`) holds all services; the code is in `redbox_
 | `cloudapi/` | FastAPI app; `routers/` one module per upstream API |
 | `certs.py`, `kioskcrypto.py` | Local CA and certificates; the Update Client's password and EncryptType1 schemes |
 | `admin/cli.py` | Operator CLI (`rb.ps1 admin ...`) |
-| `dashboard/` | Admin dashboard: `server.py` (login, JSON API), `auth.py`, `static/` (single-page UI, no build step) |
+| `dashboard/` | Admin dashboard: `server.py` (login, JSON API), `control.py` (health, fleet, accounts, provisioning, catalog browse), `auth.py` (logins and roles), `static/` (single-page UI, no build step) |
 | `schema/*.sql` | Idempotent schema, applied at start-up by every service |
 | `remoting/` | The Mono host (`src/RemotingHost.cs`), its build (`build.sh`: the kiosk's own `KioskShared` and `KioskServices.ComponentModel` sources compiled so type and assembly names match, plus the GenuineChannels patch in `tools/`) |
 
@@ -306,7 +306,7 @@ set `PACKAGES_DIR` in `.env` (it is mounted **read-only**; nothing is copied int
 .\scripts\rb.ps1 admin pin kop-v2-engine kop-v2-engine-Calvin   # serve an older revision; "latest" to undo
 ```
 
-or use the dashboard's **Update packages** page (import with progress) and the repository dialog
+or use the dashboard's **Data zips** page (import with progress) and the repository dialog
 ("Serve to kiosks"). What the 13 seeds showed, and how the import handles it:
 
 - Each repository has **one linear history**: every newer seed's revlog extends the older one's. But newer
@@ -474,26 +474,41 @@ SameSite=Strict cookies (key in the `rb-certs` volume, `ADMIN_SESSION_HOURS`, de
 must also carry `X-Requested-With: rb-admin`, failed logins are slowed down and logged. The port is published on
 `127.0.0.1` only; set `ADMIN_BIND_ADDRESS` to expose it (and keep TLS on).
 
+**Accounts.** The `.env` login is always an admin. Further accounts are made on **Users & access** (stored in
+`dash_users`, same PBKDF2 hashing) with one of three roles: **admin** (everything), **operator** (every change except
+accounts and CI tokens) and **viewer** (read only). Disabling an account or changing its password ends its sessions
+at once. Every changing request is written to the **Audit log** (user, role, method and path, result).
+
+The look follows the kiosk UI (Redbox.Rental.UI: Montserrat, rubine red). The kiosks cannot take real payments, so
+the dashboard shows rentals and returns but no money.
+
 | Page | What it shows / does |
 |---|---|
-| Overview | Counts (kiosks, MQTT connections, transactions, rentals out, discs, repositories, file sets), latest events |
-| Kiosks | Every kiosk with online status (MQTT connection or seen in the last 20 min), last seen, last Update Service check-in, market, location, Update Client version, versions the Kiosk Client reported, configuration version, disc count, last transaction |
-| Kiosk detail | Status, card reader and Bluefin, per-repository update state (kiosk head vs server head), file-set states and the deployments that apply, recent transactions and events; buttons for Ping, push configuration, file-set check, clock sync, peek and upload logs |
-| Inventory, Catalog, Barcodes | View and edit discs per kiosk (filter by kiosk), titles, barcode -> product |
-| Pricing & promotions | Default / price-level / purchase pricing, promo codes, return promo, campaigns, subscription plans, ads |
+| Overview | Kiosks online (MQTT or seen in the last 20 min) / stale / offline, rentals today, discs out, open reservations |
+| Kiosks | Every kiosk sorted by status: location, last seen, engine and Update Client versions, configuration version, discs; filter, tick several and send one IoT command to all of them |
+| Stores | Store management. Stores are physical locations; a kiosk is the machine set up as one. **Stores**, **Banners** and **Markets** are the profile.data tables `Store`, `Banner` and `Market` (76k stores in a real seed): search, add and edit them (address, state, banner, market, tax rates, return time, open date), and they are written into profile.data with the catalog on the next build. **Import from seed data** replaces just those three tables from a `dvd-data` revision (every imported data zip is one). **Kiosk installer**: the stores offered during setup (Proxy API `/api/installer/getpending*`: state, banner, store; `getopsmarket`), made from the Store row so the two agree; stop offering a store once its kiosk is installed |
+| Kiosk detail | Tabs: overview (key facts, software, recent activity), software (repositories, file sets, reported versions, deployments), inventory, rentals, reservations, commands (history of every IoT request and answer), files (peek, upload, uploaded files), events, settings (market, banner, time zone, location; reprovision file, installer settings, IoT certificates); Ping, push configuration, file-set check, clock sync, reboot |
+| System health | Every service's health and answer time, certificates and their expiry, the `.env` settings in effect (no secrets), largest tables, disk |
+| Rentals & returns | Discs rented, bought and returned, with the title of each, by kiosk, status, barcode or title |
+| Reservations, Customers | Reservations and customer accounts (generic editor) |
 | Reservation broker | Kiosks registered with the legacy broker (connected now or not, registrations, version/pricing JSON); send a reservation to a kiosk (Reserve3), cancel one (CancelReservation), ping; history of every broker call with its result |
-| Transactions | Search authorisations, gift cards, pickups, reservations by reference, e-mail, CPN or last four; detail with rentals, returns, customer, card, request and reconcile bodies; links to rentals, returns, reservations, cards |
-| Releases | Our own builds ([docs/releases.md](docs/releases.md)): upload a release zip (published unreleased), roll a revision out to a store, a market or every store, roll back (revert revision when stores already took it), per-store status, rollout history, API tokens for CI |
+| Pricing & offers | Default / price-level / purchase pricing, promo codes and redemptions, return promo and the codes issued, customer offers, campaigns, subscription plans, Redbox+ campaigns, ads |
+| Event tickets | Events, productions, ticket groups and prices, price codes, orders, seat locks, delivery methods, notifications |
+| Catalog | Poster grid with filters (new releases, formats, games per platform, coming soon, changed since the last build, no box art) and a details pane; games get their platform, ESRB rating, accessory (Kinect, Move, Wii Fit, ...), players and game genres; full editor, product groups, barcodes, other profile.data tables, import and publish ([docs/catalog.md](docs/catalog.md)) |
+| Inventory | Discs per kiosk (filter by kiosk) |
+| Data zips | The `data-<date>.zip` seeds in `PACKAGES_DIR`: import selected ones in the background with progress, list editions, build a seed zip |
+| Releases | Our own builds ([docs/releases.md](docs/releases.md)): repository list; who gets what (default, market and store rollouts), stores up to date; publish a release zip (unreleased), roll out to a store, a market or everyone, roll back (revert revision when stores already took it), per-store status, history |
 | Update Service | Repositories (revisions, head, label, snapshot, how many stores are current); publish a new revision by uploading files or a folder; rebuild a snapshot; auto-subscribe switch; store x repository matrix showing current / behind / missing and link / unlink / automatic per cell |
-| Update packages | The `data-<date>.zip` seeds in `PACKAGES_DIR`: import selected ones in the background with progress, list editions |
 | File sets | Create file sets, upload revisions (with dependencies), deploy to a kiosk, market or all on the Update Client (pushed at once) or updatemgrd channel with an activation window; kiosk states per file set |
 | Configuration | Kiosk configuration values (default / market / kiosk), set or delete and push; engine config files (updatemgrd) with per-setting editing that publishes a new generation |
-| Remote jobs | Any IoT command to a kiosk, market or all (templates for Ping, triggers, clock sync, certificate renewal, `ExecuteHttpRequest` on the kiosk's local APIs, ...), download-file jobs with a PowerShell script, updatemgrd download files with a Lua script, request/answer history, files uploaded by kiosks |
+| Remote commands | Any IoT command to a kiosk, market or all (templates for Ping, triggers, clock sync, certificate renewal, `ExecuteHttpRequest` on the kiosk's local APIs, ...), download-file jobs with a PowerShell script, updatemgrd download files with a Lua script, request/answer history, files uploaded by kiosks |
+| Provisioning | Installer `settings.json` and reprovision files for a new kiosk, the backend CA, IoT certificates (revoke), Update Client registrations, store-installer sessions |
+| Users & access | Dashboard accounts and roles, CI tokens, field-staff logins for the kiosk's staff screens, kiosk authentication settings (Cloud API keys, MQTT client certificates, Update Service credentials) |
+| Audit log | Every change made in the dashboard (who, what, result) and sign-ins |
 | Logs & events | Everything the services record (telemetry, status messages, transfer statistics, IoT traffic, logins, dashboard edits), filtered by kiosk, source, kind or text, with auto-refresh |
-| All tables | Generic editor for every table above plus customers, cards, locations, stores, sort order, merchandizing orders, profile products |
-
+| All tables | Generic editor for every table above plus cards, locations, stores, sort order, merchandizing orders, profile products, sessions, assets, planograms |
 Customer passwords and PINs are shown masked and only written when changed. Pricing and campaign edits reach
-kiosks on the Kiosk Client's own refresh schedule (30 min to 26 h); use Remote jobs > `ExecuteHttpRequest` with
+kiosks on the Kiosk Client's own refresh schedule (30 min to 26 h); use Remote commands > `ExecuteHttpRequest` with
 `POST http://localhost:9001/api/pricing/all/refresh` (or `.../api/campaign/refresh`) to refresh one kiosk now.
 Remote jobs and pushes only reach Update Clients that are connected over MQTT; updatemgrd work (repository links,
 config files, download files) goes out on its own polls.
