@@ -141,6 +141,8 @@ On the real catalog of a kiosk image (profile.data of January 2025, inventory.da
   - a fresh store got the base revision as a seed;
   - after the edit it got the 3.7 MB delta revision, staged it with SHA-1 checks and activated it. The activated
     files matched the build.
+- **Market rollout.** A revision published with `--market` was offered only to stores in that market: a store
+  of the market got it as a fresh snapshot, while a store outside it got only the last released revision.
 - **The engine** (`tests/clients/run-catalog-engine-harness.ps1`: the engine's own `ProfileData.LoadDataInstance`
   and `Archive.Find`):
   - every table loaded completely (11,656 titles, 9,489 groups, 76,172 stores, ...);

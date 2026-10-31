@@ -6,7 +6,6 @@ the repository). For a market or a kiosk it is published unreleased and rolled o
 (updatesvc/releases.py), so other kiosks stay on what they have.
 """
 import datetime as dt
-import inspect
 import pathlib
 import shutil
 
@@ -49,12 +48,7 @@ async def publish(scope="all", target=None, label=None, repo=store.REPO, progres
         files = [(tp, store.PROFILE, work / store.PROFILE), (tp, store.INVENTORY, work / store.INVENTORY)]
         label = label or "catalog-" + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-%H%M")
         await progress(f"publishing to {repo} ({tp}) for {scope} {target or ''}".rstrip())
-        if "released" in inspect.signature(repomod.publish_revision).parameters:
-            rev = await repomod.publish_revision(repo, files, label=label, released=scope == "all")
-        elif scope == "all":
-            rev = await repomod.publish_revision(repo, files, label=label)
-        else:
-            raise ValueError("rolling out to a market or a kiosk needs the release rollouts (updatesvc/releases.py)")
+        rev = await repomod.publish_revision(repo, files, label=label, released=scope == "all")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     rollout = None

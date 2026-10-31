@@ -71,6 +71,20 @@ def test_real_profile_values_round_trip():
     assert n > 1000 and not bad
 
 
+def test_omdb_answer_to_title_fields():
+    from redbox_backend.catalog.edit import omdb_fields
+    answer = {"Title": "The Example", "Year": "2019", "Rated": "PG-13", "Released": "05 Jul 2019", "Runtime": "129 min",
+              "Genre": "Action, Sci-Fi, Thriller", "Director": "A. Director", "Actors": "One, Two, Three",
+              "Plot": "Things happen.", "BoxOffice": "$390,532,085", "imdbRating": "7.4", "Production": "N/A"}
+    f = omdb_fields(answer, ratings={"PG13": 7, "NR": 10}, genres={"ACTION": 1103, "SCIFI & FANTASY": 1013,
+                                                                    "SUSPENSE": 1016})
+    assert f["long_name"] == "The Example" and f["sort_name"] == "Example"
+    assert f["rating_id"] == 7 and f["running_time"] == "2:09" and f["release_date"] == "20190705000000"
+    assert f["genres"] == [1013, 1016, 1103] and f["starring"] == ["One", "Two", "Three"]
+    assert f["box_office_gross"] == 391 and f["stars"] == 4 and "studio" not in f
+    assert f["description"].startswith("Things happen.\r\n\r\nRated PG-13")
+
+
 # ---------------------------------------------------------------------------------------- inventory.data
 
 def test_barcode_compression_matches_the_engine():
