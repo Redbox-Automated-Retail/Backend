@@ -1,10 +1,12 @@
 "use strict";
-// Redbox admin dashboard: hash-routed single page over /api (see dashboard/server.py).
+// Redbox control center: hash-routed single page over /api (see dashboard/server.py and dashboard/control.py).
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const view = () => $("#view");
+let ME = { user: "", role: "viewer" };
+const can = (what) => ME.role === "admin" || (what !== "admin" && ME.role === "operator");
 
 async function api(path, opts = {}) {
   const init = { method: opts.method || "GET", headers: { "X-Requested-With": "rb-admin" }, credentials: "same-origin" };
@@ -38,15 +40,16 @@ const fmtDate = (v) => {
 const ago = (v) => {
   if (!v) return "never";
   const s = (Date.now() - new Date(v)) / 1000;
-  if (s < 60) return Math.round(s) + " s ago";
+  if (s < 60) return Math.max(0, Math.round(s)) + " s ago";
   if (s < 3600) return Math.round(s / 60) + " min ago";
   if (s < 86400) return Math.round(s / 3600) + " h ago";
   return Math.round(s / 86400) + " d ago";
 };
+const num = (v) => Number(v || 0).toLocaleString();
 const pill = (text, cls) => `<span class="pill ${cls || ""}">${esc(text)}</span>`;
 const short = (h) => (h ? esc(String(h).slice(0, 10)) : "");
 const cell = (v) => {
-  if (v === null || v === undefined) return '<span class="muted">-</span>';
+  if (v === null || v === undefined) return '<span class="dim">-</span>';
   if (typeof v === "object") return `<code>${esc(JSON.stringify(v)).slice(0, 160)}</code>`;
   if (typeof v === "boolean") return v ? "yes" : "no";
   if (typeof v === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(v)) return fmtDate(v);
@@ -54,17 +57,71 @@ const cell = (v) => {
 };
 
 function table(rows, cols, opts = {}) {
-  if (!rows || !rows.length) return `<p class="muted">${esc(opts.empty || "Nothing here yet.")}</p>`;
-  const head = cols.map((c) => `<th>${esc(c.label ?? c.key)}</th>`).join("");
+  if (!rows || !rows.length) return `<p class="muted" style="padding:${opts.pad ? "0 18px 16px" : "0"}">${esc(opts.empty || "Nothing here yet.")}</p>`;
+  const head = cols.map((c) => `<th class="${c.right ? "r" : ""}">${esc(c.label ?? c.key)}</th>`).join("");
   const body = rows.map((r, i) => `<tr class="${opts.onclick ? "click" : ""}" data-i="${i}">` +
-    cols.map((c) => `<td class="${c.wrap ? "wrap" : ""}">${c.render ? c.render(r[c.key], r) : cell(r[c.key])}</td>`).join("") + "</tr>").join("");
+    cols.map((c) => `<td class="${c.wrap ? "wrap" : ""} ${c.right ? "r" : ""}">${c.render ? c.render(r[c.key], r) : cell(r[c.key])}</td>`).join("") + "</tr>").join("");
   return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
-function bindRows(root, rows, fn) { $$("tr.click", root).forEach((tr) => tr.addEventListener("click", () => fn(rows[+tr.dataset.i]))); }
+function bindRows(root, rows, fn) { $$("tr.click", root).forEach((tr) => tr.addEventListener("click", (e) => { if (!e.target.closest("button,a,input")) fn(rows[+tr.dataset.i]); })); }
 
 function modal(html) { $("#modal-content").innerHTML = html; $("#modal").classList.remove("hidden"); return $("#modal-content"); }
 function closeModal() { $("#modal").classList.add("hidden"); }
 $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
+
+// ------------------------------------------------------------------------------------------- icons
+const ICON = {
+  home: "M3 11 12 4l9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z",
+  kiosk: "M6 2h12a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zm2 3v6h8V5zm0 9v2h3v-2z",
+  pulse: "M3 12h4l3-8 4 16 3-8h4",
+  cart: "M3 4h2l2.4 11.2a1 1 0 0 0 1 .8h8.9a1 1 0 0 0 1-.8L20 8H6.2M9 20.5a1 1 0 1 0 0-.01M17 20.5a1 1 0 1 0 0-.01",
+  ticket: "M3 8a2 2 0 0 0 0 4v4a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1v-4a2 2 0 0 1 0-4V5a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1zM14 4v13",
+  link: "M10 14a4 4 0 0 0 5.6 0l3-3a4 4 0 0 0-5.6-5.6l-1 1M14 10a4 4 0 0 0-5.6 0l-3 3A4 4 0 0 0 11 18.6l1-1",
+  users: "M16 20v-1a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v1M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM22 20v-1a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8",
+  gift: "M20 12v9H4v-9M2 7h20v5H2zM12 21V7M12 7H7.5a2.5 2.5 0 1 1 0-5C11 2 12 7 12 7zM12 7h4.5a2.5 2.5 0 1 0 0-5C13 2 12 7 12 7z",
+  film: "M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM7 3v18M17 3v18M3 8h4M3 12h4M3 16h4M17 8h4M17 12h4M17 16h4",
+  disc: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4z",
+  box: "M21 8 12 3 3 8v8l9 5 9-5zM3 8l9 5 9-5M12 13v8",
+  rocket: "M5 15c-1.5 1.3-2 5-2 5s3.7-.5 5-2M9 15l-3-3a14 14 0 0 1 10-9 3 3 0 0 1 3 3 14 14 0 0 1-9 10zM9 9H5l-2 3h5M15 15v4l-3 2v-5",
+  layers: "M12 2 2 7l10 5 10-5zM2 17l10 5 10-5M2 12l10 5 10-5",
+  folder: "M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z",
+  sliders: "M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6",
+  terminal: "M4 17l6-5-6-5M12 19h8",
+  wrench: "M14.7 6.3a4 4 0 0 0 5 5l-9.4 9.4a2.1 2.1 0 0 1-3-3zM14.7 6.3 17 4",
+  shield: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z",
+  list: "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01",
+  db: "M12 8c5 0 9-1.3 9-3s-4-3-9-3-9 1.3-9 3 4 3 9 3zM3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5M3 12c0 1.7 4 3 9 3s9-1.3 9-3",
+  search: "M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.3-4.3",
+  ping: "M5 12.55a11 11 0 0 1 14 0M8.5 16.4a6 6 0 0 1 7 0M12 20h.01M2 8.8a16 16 0 0 1 20 0",
+  upload: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12",
+  undo: "M3 7v6h6M21 17a9 9 0 0 0-15-6.7L3 13",
+  plus: "M12 5v14M5 12h14",
+  check: "M20 6 9 17l-5-5",
+  audit: "M9 11l3 3 8-8M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9",
+};
+const ic = (n) => `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="${ICON[n]}"/></svg>`;
+
+const NAV = [
+  ["Control center", [["overview", "home", "Overview"], ["kiosks", "kiosk", "Kiosks"], ["system", "pulse", "System health"]]],
+  ["Kiosk activity", [["rentals", "cart", "Rentals & returns"], ["data/reservations", "ticket", "Reservations"], ["broker", "link", "Reservation broker"],
+    ["data/customers", "users", "Customers"], ["pricing", "gift", "Pricing & offers"], ["tickets", "ticket", "Event tickets"]]],
+  ["Content", [["catalog", "film", "Catalog"], ["data/inventory", "disc", "Inventory"], ["packages", "box", "Data zips"]]],
+  ["Software", [["releases", "rocket", "Releases"], ["updates", "layers", "Update Service"], ["filesets", "folder", "File sets"], ["config", "sliders", "Configuration"]]],
+  ["Operations", [["jobs", "terminal", "Remote commands"], ["provisioning", "wrench", "Provisioning"]]],
+  ["Admin", [["access", "shield", "Users & access"], ["audit", "audit", "Audit log"], ["logs", "list", "Logs & events"], ["tables", "db", "All tables"]]],
+];
+function drawNav(counts = {}) {
+  $("#nav").innerHTML = NAV.map(([g, items]) => `<div class="nav-group">${esc(g)}</div><nav>` + items.map(([id, icon, label]) =>
+    `<a href="#/${id}" data-nav="${id}">${ic(icon)}${esc(label)}${counts[id] ? `<span class="badge">${esc(counts[id])}</span>` : ""}</a>`).join("") + "</nav>").join("");
+  markNav();
+}
+function markNav() {
+  const hash = location.hash.replace(/^#\/?/, "").split("?")[0] || "overview";
+  const name = hash.split("/")[0];
+  const key = name === "kiosk" ? "kiosks" : hash.startsWith("data/") ? hash : name;
+  $$("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.nav === key));
+}
 
 // ------------------------------------------------------------------------------------------ login
 function showLogin() { $("#shell").classList.add("hidden"); $("#login").classList.remove("hidden"); $("#login-pass").focus(); }
@@ -80,118 +137,250 @@ $("#login-form").addEventListener("submit", async (e) => {
 $("#logout").addEventListener("click", async () => { await api("/logout", { body: {} }); showLogin(); });
 
 async function start() {
-  try { const me = await api("/me"); $("#me").textContent = me.user; } catch { return; }
+  try { ME = await api("/me"); } catch { return; }
+  $("#me").textContent = ME.user; $("#me-role").textContent = ME.role; $("#me-avatar").textContent = ME.user.slice(0, 1);
   $("#login").classList.add("hidden"); $("#shell").classList.remove("hidden");
+  drawNav();
   route();
+  health();
+}
+
+// Service health line in the sidebar, refreshed every 30 s.
+async function health() {
+  clearTimeout(health.timer);
+  try {
+    const s = await api("/system");
+    const up = s.services.filter((x) => x.ok).length;
+    const cls = up === s.services.length ? "" : up >= s.services.length - 1 ? "warn" : "bad";
+    $("#health").innerHTML = `<span class="dot ${cls}"></span>${up === s.services.length ? "All services healthy" : `${up} of ${s.services.length} services healthy`}`;
+  } catch { $("#health").innerHTML = '<span class="dot bad"></span>Health unknown'; }
+  health.timer = setTimeout(health, 30000);
 }
 
 // ----------------------------------------------------------------------------------------- router
 const routes = {};
+let pageTitle = "";
 function route() {
   const hash = location.hash.replace(/^#\/?/, "").split("?")[0] || "overview";
   const [name, ...rest] = hash.split("/");
   const key = routes[hash] ? hash : name;
-  $$(".side a").forEach((a) => a.classList.toggle("active", a.dataset.nav === hash || a.dataset.nav === name));
+  markNav();
   const fn = routes[key] || routes.overview;
+  pageTitle = "";
   view().innerHTML = '<p class="muted">Loading...</p>';
-  fn(...(routes[hash] ? [] : rest)).catch((e) => { view().innerHTML = `<p class="error">${esc(e.message)}</p>`; });
+  fn(...(routes[hash] ? [] : rest)).then(() => {
+    // pages that do not draw their own header get one from title()
+    if (pageTitle && !$(".head", view()) && !$(".crumb", view())) view().insertAdjacentHTML("afterbegin", `<div class="head"><h1>${esc(pageTitle)}</h1></div>`);
+  }).catch((e) => { view().innerHTML = `<div class="head"><h1>${esc(pageTitle || "Error")}</h1></div><p class="error">${esc(e.message)}</p>`; });
 }
 window.addEventListener("hashchange", () => { closeModal(); route(); });
-const title = (t) => { $("#page-title").textContent = t; document.title = t + " - Redbox Admin"; };
+const title = (t) => { pageTitle = t; document.title = (t ? t + " - " : "") + "Redbox Control Center"; };
+const head = (t, lede = "", actions = "") => { title(t); return `<div class="head"><div><h1>${esc(t)}</h1>${lede ? `<div class="lede">${lede}</div>` : ""}</div><span class="grow"></span>${actions}</div>`; };
+
+// tiny SVG line for stat tiles
+function spark(vals) {
+  if (!vals || vals.length < 2) return "";
+  const w = 200, h = 30, max = Math.max(...vals) || 1, step = w / (vals.length - 1);
+  const pts = vals.map((v, i) => `${(i * step).toFixed(1)},${(h - 3 - (v / max) * (h - 8)).toFixed(1)}`).join(" ");
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><polyline points="${pts}" fill="none" stroke="#6A626F" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>`;
+}
+const statusOf = (k) => (k.mqtt_connected || k.status === "online" ? ["ok", "Online"] : k.status === "recent" || k.online ? ["ok", "Recent"]
+  : k.status === "stale" ? ["warn", "Stale"] : ["bad", "Offline"]);
 
 // --------------------------------------------------------------------------------------- overview
 routes.overview = async () => {
-  title("Overview");
-  const d = await api("/overview");
-  const c = d.counts;
-  const stat = (n, l, href) => `<a class="card stat" href="${href}" style="text-decoration:none;color:inherit"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></a>`;
-  view().innerHTML = `<div class="stats">
-    ${stat(c.kiosks, "kiosks known", "#/kiosks")}${stat(c.mqtt_online, "connected over MQTT", "#/kiosks")}
-    ${stat(c.recent, "seen in the last 20 min", "#/kiosks")}${stat(c.transactions_24h, "transactions (24 h)", "#/transactions")}
-    ${stat(c.rentals_out, "discs rented out", "#/data/rentals")}${stat(c.discs, "discs in kiosks", "#/data/inventory")}
-    ${stat(c.repositories, "update repositories", "#/updates")}${stat(c.filesets, "file sets", "#/filesets")}
-    ${stat(c.events_1h, "events (1 h)", "#/logs")}</div>
-    <h3>Latest events</h3>${eventsTable(d.events)}`;
+  const d = await api("/fleet");
+  const s = d.status, c = d.counts;
+  const up = s.online + s.recent;
+  const now = new Date();
+  view().innerHTML = head("Overview", `${up} of ${s.total} kiosks online · ${esc(now.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" }))}, ${esc(now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }))}`,
+    can() ? `<a class="button" href="#/jobs">${ic("terminal")}Send a command</a><a class="button primary" href="#/releases">${ic("rocket")}Roll out a release</a>` : "") + `
+    <div class="grid4">
+      <a class="card stat" href="#/kiosks"><div class="l">Kiosks online</div><div class="n">${up}<small> / ${s.total}</small></div>
+        <div class="s">${[s.stale && `${s.stale} stale`, s.offline && `${s.offline} offline`].filter(Boolean).join(" · ") || "all reporting"}</div></a>
+      <a class="card stat" href="#/rentals"><div class="l">Rentals today</div><div class="n">${num(c.rentals_today)}</div><div class="s">${num(c.returns_24h)} returns in 24 h</div>${spark(d.hourly.map((h) => +h.n))}</a>
+      <a class="card stat" href="#/data/rentals"><div class="l">Discs out</div><div class="n">${num(c.rentals_out)}</div><div class="s">${num(c.discs)} discs in kiosks</div></a>
+      <a class="card stat" href="#/data/reservations"><div class="l">Open reservations</div><div class="n">${num(c.reservations_open)}</div><div class="s">${num(c.broker_kiosks)} kiosks on the broker</div></a>
+    </div>`;
 };
-
-function eventsTable(rows) {
-  return table(rows, [
-    { key: "created_at", label: "Time" }, { key: "kiosk_id", label: "Kiosk", render: (v) => v ? `<a href="#/kiosk/${esc(v)}">${esc(v)}</a>` : "-" },
-    { key: "source", label: "Source" }, { key: "kind", label: "Kind" },
-    { key: "payload", label: "Payload", wrap: true, render: (v) => v ? `<code>${esc(JSON.stringify(v)).slice(0, 400)}</code>` : "" }]);
-}
 
 // ----------------------------------------------------------------------------------------- kiosks
 routes.kiosks = async () => {
-  title("Kiosks");
   const rows = await api("/kiosks");
-  view().innerHTML = `<div class="toolbar"><input id="kf" placeholder="Filter by id, market, city" class="grow">
-    <button id="rpv">Reprovision a kiosk</button><a class="button" href="#/data/kiosks">Edit kiosk records</a></div><div id="kt"></div>`;
-  $("#rpv").addEventListener("click", () => reprovisionDialog(""));
+  const q = query();
+  const rank = (r) => ({ bad: 0, warn: 1, ok: 2 }[statusOf(r)[0]]);
+  rows.sort((a, b) => rank(a) - rank(b) || a.kiosk_id - b.kiosk_id);
+  view().innerHTML = head("Kiosks", `${rows.length} kiosks · ${rows.filter((r) => statusOf(r)[0] === "ok").length} online`,
+    can() ? `<button id="rpv">Reprovision a kiosk</button><button id="bulk">${ic("terminal")}Command to selected</button>` : "") + `
+    <div class="toolbar"><div class="search grow">${ic("search")}<input id="kf" placeholder="Filter by id, market, city, version" value="${esc(q.q || "")}"></div>
+      <select id="ks"><option value="">any status</option><option value="ok">online</option><option value="warn">stale</option><option value="bad">offline</option></select></div>
+    <div class="card flush" id="kt"></div>`;
+  if (q.status) $("#ks").value = { offline: "bad", stale: "warn", online: "ok" }[q.status] || "";
   const draw = () => {
-    const f = $("#kf").value.toLowerCase();
-    const list = rows.filter((r) => !f || JSON.stringify([r.kiosk_id, r.market, r.city, r.label]).toLowerCase().includes(f));
+    const f = $("#kf").value.toLowerCase(), st = $("#ks").value;
+    const list = rows.filter((r) => (!st || statusOf(r)[0] === st) && (!f || JSON.stringify([r.kiosk_id, r.market, r.city, r.label, r.ucs_version, r.versions]).toLowerCase().includes(f)));
     $("#kt").innerHTML = table(list, [
-      { key: "kiosk_id", label: "Kiosk" }, { key: "online", label: "Status", render: (v, r) => r.mqtt_connected ? pill("MQTT online", "ok") : v ? pill("recent", "warn") : pill("offline", "bad") },
-      { key: "last_seen_at", label: "Last seen", render: (v) => ago(v) }, { key: "last_check_in", label: "Update Service check-in", render: (v) => ago(v) },
-      { key: "market", label: "Market" }, { key: "label", label: "Location", render: (v, r) => esc([v, r.city, r.location_state].filter(Boolean).join(", ")) },
-      { key: "ucs_version", label: "Update Client" },
-      { key: "versions", label: "Versions (Kiosk Client report)", wrap: true, render: (v) => v ? `<code>${esc(Object.entries(v).slice(0, 4).map(([k, x]) => k + " " + x).join(", "))}</code>` : '<span class="muted">-</span>' },
-      { key: "config_version", label: "Config ver." }, { key: "discs", label: "Discs" }, { key: "last_transaction", label: "Last transaction", render: (v) => v ? ago(v) : "-" },
-    ], { onclick: true, empty: "No kiosk has contacted the backend yet." });
+      { key: "_sel", label: "", render: (v, r) => `<input type="checkbox" data-k="${esc(r.kiosk_id)}">` },
+      { key: "kiosk_id", label: "Kiosk", render: (v) => `<b>${esc(v)}</b>` },
+      { key: "label", label: "Location", render: (v, r) => `<span class="muted">${esc([r.market, [v, r.city].filter(Boolean).join(", ")].filter(Boolean).join(" · ") || "-")}</span>` },
+      { key: "online", label: "Status", render: (v, r) => { const [c, t] = statusOf(r); return `<span class="st ${c}"><span class="dot ${c}"></span>${t}</span>`; } },
+      { key: "last_seen_at", label: "Last seen", render: (v) => `<span class="muted">${esc(ago(v))}</span>` },
+      { key: "versions", label: "Engine", render: (v) => `<span class="muted">${esc(v && (v.KioskEngine || v["Kiosk Engine"] || Object.values(v)[0]) || "-")}</span>` },
+      { key: "ucs_version", label: "Update Client", render: (v) => `<span class="muted">${esc(v || "-")}</span>` },
+      { key: "config_version", label: "Config", render: (v) => `<span class="muted">${v ? "v" + esc(v) : "-"}</span>` },
+      { key: "discs", label: "Discs", right: true },
+    ], { onclick: true, pad: true, empty: "No kiosk has contacted the backend yet." });
     bindRows($("#kt"), list, (r) => (location.hash = "#/kiosk/" + r.kiosk_id));
   };
-  $("#kf").addEventListener("input", draw); draw();
+  $("#kf").addEventListener("input", draw); $("#ks").onchange = draw; draw();
+  if ($("#rpv")) $("#rpv").onclick = () => reprovisionDialog("");
+  if ($("#bulk")) $("#bulk").onclick = () => {
+    const ids = $$("input[data-k]:checked").map((c) => c.dataset.k);
+    if (!ids.length) return toast("Tick the kiosks first", true);
+    commandDialog(ids);
+  };
 };
 
-routes.kiosk = async (id) => {
+// One IoT command to one or more kiosks.
+async function commandDialog(ids, preset) {
+  const cmds = await api("/jobs/commands");
+  const m = modal(`<h3>Command to ${ids.length === 1 ? "kiosk " + esc(ids[0]) : ids.length + " kiosks"}</h3><form id="cf">
+    <label>Command <select name="command">${Object.keys(cmds).map((c) => `<option ${c === preset ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></label>
+    <label>Version <input name="version" type="number"></label><label>Payload (JSON) <textarea name="payload" rows="5"></textarea></label>
+    <div class="toolbar mt"><button class="primary">Send</button><button type="button" id="cl">Cancel</button></div></form><pre id="co" class="mt hidden"></pre>`);
+  const f = $("#cf", m);
+  const fill = () => { const c = cmds[f.command.value]; f.version.value = c.version; f.payload.value = c.payload === null ? "" : JSON.stringify(c.payload, null, 1); };
+  f.command.onchange = fill; fill();
+  $("#cl", m).onclick = closeModal;
+  f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const r = await act(() => api("/kiosks/command", { body: { kiosks: ids, command: f.command.value, version: f.version.value, payload: f.payload.value } }),
+      (x) => `${f.command.value}: delivered to ${x.delivered} of ${ids.length}`);
+    $("#co", m).classList.remove("hidden"); $("#co", m).textContent = JSON.stringify(r.results, null, 2);
+  });
+}
+
+// ----------------------------------------------------------------------------------- kiosk detail
+const KIOSK_TABS = [["overview", "Overview"], ["software", "Software"], ["inventory", "Inventory"], ["rentals", "Rentals"], ["reservations", "Reservations"],
+  ["commands", "Commands"], ["files", "Files"], ["events", "Events"], ["settings", "Settings"]];
+const FS_STATE = ["Active", "InProgress", "NeedsDependency", "Error"];
+
+routes.kiosk = async (id, tab = "overview") => {
+  const [d, a] = await Promise.all([api("/kiosks/" + id), api(`/kiosks/${id}/activity`)]);
+  const k = d.kiosk, loc = d.location || {};
+  const [sc, st] = d.mqtt ? ["ok", "Online"] : (Date.now() - new Date(k.last_seen_at)) < 20 * 60000 ? ["ok", "Recent"]
+    : (Date.now() - new Date(k.last_seen_at)) < 86400000 ? ["warn", "Stale"] : ["bad", "Offline"];
+  const engine = k.info && k.info.Versions ? (k.info.Versions.KioskEngine || k.info.Versions["Kiosk Engine"] || "") : "";
   title("Kiosk " + id);
-  const d = await api("/kiosks/" + id);
-  const k = d.kiosk;
-  const kv = (o) => `<div class="kv">${Object.entries(o).map(([a, b]) => `<div>${esc(a)}</div><div>${b}</div>`).join("")}</div>`;
-  const dev = d.device ? d.device.payload : null;
-  view().innerHTML = `<div class="toolbar">
-      <button data-cmd="Ping">Ping</button><button data-cmd="TriggerGetConfigChanges">Push configuration</button>
-      <button data-cmd="TriggerReportFileSetVersions">Check file sets</button><button data-cmd="SyncTimestampAndTimezone">Sync clock</button>
-      <button id="peek">Peek logs</button><button id="upl">Upload logs</button><button id="rpv">Reprovision file</button>
-      <a class="button" href="#/data/inventory?kiosk=${esc(id)}">Inventory</a><a class="button" href="#/transactions?kiosk=${esc(id)}">Transactions</a>
-      <a class="button" href="#/logs?kiosk=${esc(id)}">Events</a></div>
-    <div class="grid2">
-      <div class="card"><h3>Status</h3>${kv({
-        "MQTT": d.mqtt ? pill("connected from " + d.mqtt.peer, "ok") : pill("not connected", "bad"),
-        "Last seen": esc(ago(k.last_seen_at)), "Market": esc(k.market || "-"), "Banner": esc(k.banner || "-"), "Time zone": esc(k.timezone || "-"),
-        "Update Client": esc(k.ucs_version || "-") + (d.registration && d.registration.last_ping_at ? `, last ping ${esc(ago(d.registration.last_ping_at))}` : ""),
-        "Broker registered": d.registration ? esc(d.registration.broker_registered) : "-",
-        "Update Service check-in": esc(d.store ? ago(d.store.last_check_in) : "never"),
-        "Configuration": d.config ? `reported v${esc(d.config.reported_version)}, activated v${esc(d.config.activated_version)} (current v${esc(d.config_current)})` : `never pulled (current v${esc(d.config_current)})`,
-        "Card reader": dev ? esc(`RBA ${dev.RBA || "-"}, serial ${dev.Serial || "-"}, error state ${dev.ErrorState}`) : "-",
-        "Bluefin": d.bluefin.length ? esc(d.bluefin.map((b) => b.reader_serial + " " + b.status).join(", ")) : "-",
-      })}</div>
-      <div class="card"><h3>Versions reported by the Kiosk Client</h3>${k.info && k.info.Versions ? kv(Object.fromEntries(Object.entries(k.info.Versions).map(([a, b]) => [a, esc(b)]))) : '<p class="muted">No kioskversions report yet.</p>'}</div>
-    </div>
-    <h3>Legacy update repositories (updatemgrd)</h3>${table(d.repositories, [
-      { key: "repo", label: "Repository" }, { key: "subscribed", label: "Subscribed" },
-      { key: "current", label: "State", render: (v, r) => !r.subscribed ? pill("not subscribed") : !r.reported ? pill("never reported", "warn") : v ? pill("current", "ok") : pill("behind", "warn") },
-      { key: "reported", label: "Kiosk head", render: (v, r) => short(v) + (r.reported_label ? " " + esc(r.reported_label) : "") },
-      { key: "server_head", label: "Server head", render: short }, { key: "reported_at", label: "Reported" }])}
-    <h3>File sets (Update Client / updatemgrd)</h3>${table(d.filesets, [
-      { key: "fileset_id", label: "File set" }, { key: "name", label: "Name" }, { key: "channel", label: "Channel" },
-      { key: "revision_id", label: "Revision" }, { key: "version", label: "Version" },
-      { key: "state", label: "State", render: (v) => [pill("Active", "ok"), pill("InProgress", "warn"), pill("NeedsDependency", "bad"), pill("Error", "bad")][v] || esc(v) },
-      { key: "updated_at", label: "Reported" }], { empty: "No file-set report from this kiosk." })}
-    <h3>Deployments that apply to this kiosk</h3>${table(d.deployments, [
-      { key: "id", label: "Deployment" }, { key: "fileset_id", label: "File set" }, { key: "revision_id", label: "Revision" },
-      { key: "channel", label: "Channel" }, { key: "target_type", label: "Target" }, { key: "created_at", label: "Created" }])}
-    <h3>Recent transactions</h3>${table(d.transactions, [{ key: "reference_number", label: "Reference" }, { key: "kind" }, { key: "status" }, { key: "amount" }, { key: "created_at", label: "Time" }])}
-    <h3>Recent events</h3>${eventsTable(d.events)}`;
-  $$("button[data-cmd]").forEach((b) => b.addEventListener("click", async () => {
-    const cmds = await api("/jobs/commands"); const c = cmds[b.dataset.cmd];
-    await act(() => api("/jobs/iot", { body: { target: id, command: b.dataset.cmd, version: c.version, payload: c.payload, wait: b.dataset.cmd === "Ping" ? 10 : 0 } }),
-      (r) => `${b.dataset.cmd}: ${r.delivered} delivery` + (r.response !== undefined ? (r.response ? ", kiosk answered" : ", no answer") : ""));
-  }));
-  $("#peek").addEventListener("click", () => peekDialog(id));
-  $("#upl").addEventListener("click", () => uploadDialog(id));
-  $("#rpv").addEventListener("click", () => reprovisionDialog(id, k.market));
+  view().innerHTML = `<div class="crumb"><a href="#/kiosks">Kiosks</a>${k.market ? " / " + esc(k.market) : ""}</div>
+    <div class="head"><div><h1>${esc(id)} <span class="dim" style="font-weight:600">${esc(loc.label || loc.city || "")}</span></h1>
+      <div class="lede row" style="gap:16px"><span class="st ${sc}"><span class="dot ${sc}"></span>${st}</span>${k.market ? `<span>${esc(k.market)} market</span>` : ""}
+        ${engine ? `<span>Kiosk Engine ${esc(engine)}</span>` : ""}${d.mqtt ? `<span class="dim">MQTT from ${esc(d.mqtt.peer)}</span>` : ""}</div></div>
+      <span class="grow"></span>${can() ? `<button data-cmd="Ping">${ic("ping")}Ping</button><button data-cmd="TriggerGetConfigChanges">${ic("sliders")}Push config</button>
+      <select id="more" class="button" style="width:auto;padding-right:8px"><option value="">More...</option><option value="TriggerReportFileSetVersions">Check file sets</option>
+        <option value="SyncTimestampAndTimezone">Sync clock</option><option value="_peek">Peek logs</option><option value="_upload">Upload logs</option>
+        <option value="_cmd">Other command...</option><option value="_reprovision">Reprovision file</option><option value="_reboot">Reboot...</option></select>` : ""}</div>
+    <div class="tabs">${KIOSK_TABS.map(([t, l]) => `<a href="#/kiosk/${esc(id)}/${t}" class="${t === tab ? "on" : ""}">${l}</a>`).join("")}</div><div id="kv"></div>`;
+  const send = async (cmd, payload, version, wait = 0) => {
+    const cmds = await api("/jobs/commands"); const c = cmds[cmd] || {};
+    return act(() => api("/jobs/iot", { body: { target: id, command: cmd, version: version || c.version, payload: payload === undefined ? c.payload : payload, wait } }),
+      (r) => `${cmd}: ${r.delivered ? "delivered" : "not delivered (not connected)"}` + (r.response !== undefined ? (r.response ? ", kiosk answered" : ", no answer") : ""));
+  };
+  $$("button[data-cmd]").forEach((b) => (b.onclick = () => send(b.dataset.cmd, undefined, undefined, b.dataset.cmd === "Ping" ? 10 : 0)));
+  if ($("#more")) $("#more").onchange = async (e) => {
+    const v = e.target.value; e.target.value = "";
+    if (v === "_peek") return peekDialog(id);
+    if (v === "_upload") return uploadDialog(id);
+    if (v === "_cmd") return commandDialog([id]);
+    if (v === "_reprovision") return reprovisionDialog(id, k.market);
+    if (v === "_reboot") {
+      if (!confirm(`Reboot kiosk ${id} now? Anyone at the kiosk is interrupted.`)) return;
+      return send("ExecuteHttpRequest", { Url: "http://localhost:6001/api/kernel/shutdown?shutdownType=Reboot", HttpMethod: "POST", JsonBody: "" }, 2);
+    }
+    if (v) send(v);
+  };
+  const root = $("#kv");
+  const repoTable = (rows) => table(rows, [{ key: "repo", label: "Repository", render: (v) => `<b>${esc(v)}</b>` },
+    { key: "reported", label: "Runs", render: (v, r) => v ? `<code>${esc(r.reported_label || short(v))}</code>` : '<span class="dim">-</span>' },
+    { key: "server_head", label: "Newest on the server", render: (v) => `<code>${short(v)}</code>` },
+    { key: "current", label: "", right: true, render: (v, r) => !r.subscribed ? '<span class="st mute">Not subscribed</span>' : !r.reported ? '<span class="st warn"><span class="dot warn"></span>No report</span>'
+      : v ? '<span class="st mute">Current</span>' : '<span class="st warn"><span class="dot warn"></span>Behind</span>' }], { pad: true });
+  const evTable = (rows) => table(rows, [{ key: "created_at", label: "Time", render: (v) => `<span class="dim">${esc(fmtDate(v))}</span>` }, { key: "source" }, { key: "kind" },
+    { key: "payload", label: "Details", wrap: true, render: (v) => v ? `<code>${esc(JSON.stringify(v)).slice(0, 300)}</code>` : "" }], { pad: true, empty: "No events." });
+
+  if (tab === "overview") {
+    const today = a.daily.length ? a.daily[a.daily.length - 1] : { n: 0 };
+    root.innerHTML = `<div class="card"><div class="facts">
+        <div><span>Last seen</span><b>${esc(ago(k.last_seen_at))}</b></div>
+        <div><span>Configuration</span><b>${d.config ? `v${esc(d.config.activated_version)}${d.config.activated_version >= d.config_current ? ", current" : `, current is v${esc(d.config_current)}`}` : "never pulled"}</b></div>
+        <div><span>Discs</span><b>${num(a.inventory.discs)} in kiosk · ${num(a.out)} out</b></div>
+        <div><span>Rentals today</span><b>${num(today.n)}</b></div>
+        <div><span>Update Service</span><b>${esc(d.store ? ago(d.store.last_check_in) : "never")}</b></div></div></div>
+      <div class="grid-main mt"><div class="card flush"><div class="card-h"><h2>Software</h2><a class="more" href="#/kiosk/${esc(id)}/software">All ${d.repositories.length} →</a></div>${repoTable(d.repositories.filter((r) => r.reported).slice(0, 8)).replace("Nothing here yet.", "This kiosk has not reported any Update Service repository yet.")}</div>
+        <div class="card flush"><div class="card-h"><h2>Recent activity</h2><a class="more" href="#/kiosk/${esc(id)}/events">All events →</a></div>
+          ${table(d.events.slice(0, 8), [{ key: "created_at", label: "", render: (v) => `<span class="dim">${esc(new Date(v).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }))}</span>` },
+            { key: "kind", label: "", render: (v, r) => `${esc(r.source)} · ${esc(v)}` }], { pad: true, empty: "Nothing yet." })}</div></div>`;
+  } else if (tab === "software") {
+    const v = k.info && k.info.Versions;
+    root.innerHTML = `<div class="card flush"><div class="card-h"><h2>Update Service repositories (updatemgrd)</h2><a class="more" href="#/releases">Releases →</a></div>${repoTable(d.repositories)}</div>
+      <div class="grid2 mt"><div class="card flush"><div class="card-h"><h2>File sets</h2></div>${table(d.filesets, [{ key: "fileset_id", label: "Set" }, { key: "name" }, { key: "channel" },
+        { key: "version" }, { key: "state", render: (s) => s === 0 ? '<span class="st mute">Active</span>' : `<span class="st ${s === 1 ? "warn" : "bad"}"><span class="dot ${s === 1 ? "warn" : "bad"}"></span>${esc(FS_STATE[s] || s)}</span>` },
+        { key: "updated_at", label: "Reported", render: (x) => esc(ago(x)) }], { pad: true, empty: "No file-set report." })}</div>
+        <div class="card"><div class="card-h"><h2>Versions the Kiosk Client reports</h2></div>${v ? `<div class="kv">${Object.entries(v).map(([n, x]) => `<div>${esc(n)}</div><div>${esc(x)}</div>`).join("")}</div>` : '<p class="muted">No report yet.</p>'}
+          <div class="kv mt"><div>Update Client</div><div>${esc(k.ucs_version || "-")}${d.registration && d.registration.last_ping_at ? `, ping ${esc(ago(d.registration.last_ping_at))}` : ""}</div></div></div></div>
+      <div class="card flush mt"><div class="card-h"><h2>Deployments for this kiosk</h2></div>${table(d.deployments, [{ key: "id", label: "Deployment" }, { key: "fileset_id", label: "File set" },
+        { key: "revision_id", label: "Revision" }, { key: "channel" }, { key: "target_type", label: "Target" }, { key: "created_at", label: "Created" }], { pad: true, empty: "None." })}</div>`;
+  } else if (tab === "inventory") {
+    const inv = await api(`/tables/inventory?kiosk_id=${id}&limit=500`);
+    root.innerHTML = `<div class="card"><div class="facts"><div><span>Discs</span><b>${num(a.inventory.discs)}</b></div><div><span>Titles</span><b>${num(a.inventory.titles)}</b></div>
+        <div><span>Rented out from here</span><b>${num(a.out)}</b></div><div><span>Last inventory sync</span><b>${esc(ago(a.inventory.last_sync))}</b></div></div></div>
+      <div class="card flush mt">${table(inv.rows, [{ key: "barcode" }, { key: "deck" }, { key: "slot" }, { key: "status" }, { key: "updated_at", label: "Updated" }], { pad: true, empty: "No inventory reported." })}</div>`;
+  } else if (tab === "rentals") {
+    const r = await api(`/tables/rentals?kiosk_id=${id}&limit=200`);
+    r.rows.sort((x, y) => new Date(y.rented_at) - new Date(x.rented_at));
+    root.innerHTML = `<div class="card flush">${table(r.rows, [{ key: "rented_at", label: "Rented" }, { key: "barcode" }, { key: "product_id", label: "Title" },
+      { key: "product_type", label: "Type" }, { key: "status" }, { key: "returned_at", label: "Returned" }, { key: "return_kiosk_id", label: "Returned to" }], { pad: true, empty: "No rentals yet." })}</div>`;
+  } else if (tab === "reservations") {
+    root.innerHTML = `<div class="card flush">${table(a.reservations, [{ key: "reference_number", label: "Reference" }, { key: "status" }, { key: "items", label: "Titles", render: (v) => esc((v || []).map((x) => x.TitleID).join(", ")) },
+      { key: "created_at", label: "Created" }, { key: "expires_at", label: "Expires" }], { pad: true, empty: "No reservations." })}</div>
+      ${a.broker ? `<p class="muted mt">Registered with the reservation broker since ${esc(fmtDate(a.broker.registered_at))}. <a href="#/broker">Send a reservation</a></p>` : ""}`;
+  } else if (tab === "commands") {
+    root.innerHTML = `<div class="grid-main"><div class="card"><div class="card-h"><h2>Command history</h2></div><div class="console">${a.requests.length ? a.requests.map((r) =>
+        `<div><span class="p">›</span> ${esc(r.command)} <span class="d">v${esc(r.version)} · ${esc(fmtDate(r.created_at))}</span></div>` +
+        (r.responded_at ? `<div class="o">✓ ${esc(JSON.stringify(r.response)).slice(0, 220)}</div>` : '<div class="x">… no answer</div>')).join("") : '<span class="d">No commands sent yet.</span>'}</div></div>
+      <div class="card"><div class="card-h"><h2>Send</h2></div><p class="muted">Pick any Update Client command; the payload is filled in for you.</p>${can() ? '<button class="primary" id="nc">New command...</button>' : ""}</div></div>`;
+    if ($("#nc")) $("#nc").onclick = () => commandDialog([id]);
+  } else if (tab === "files") {
+    root.innerHTML = `<div class="toolbar">${can() ? '<button id="pk">Peek files...</button><button id="up">Upload files...</button>' : ""}</div>
+      <div class="card flush">${table(a.uploads, [{ key: "key", label: "Uploaded file", render: (v) => `<a class="link" href="/api/uploads/file?key=${encodeURIComponent(v)}">${esc(v.split("/").pop())}</a>` },
+        { key: "size", render: (v) => esc((v / 1024).toFixed(0)) + " KB" }, { key: "modified", label: "When" }], { pad: true, empty: "Nothing uploaded from this kiosk yet." })}</div>`;
+    if ($("#pk")) { $("#pk").onclick = () => peekDialog(id); $("#up").onclick = () => uploadDialog(id); }
+  } else if (tab === "events") {
+    root.innerHTML = `<div class="card flush">${evTable(d.events)}</div><p class="mt"><a href="#/logs?kiosk=${esc(id)}">Search all events of this kiosk →</a></p>`;
+  } else if (tab === "settings") {
+    const fld = (n, l, v) => `<div class="field"><span>${esc(l)}</span><input name="${n}" value="${esc(v ?? "")}" ${can() ? "" : "disabled"}></div>`;
+    root.innerHTML = `<div class="grid2"><form id="kf" class="card"><div class="card-h"><h2>Kiosk</h2></div>
+        ${fld("k.market", "Market", k.market)}${fld("k.banner", "Banner", k.banner)}${fld("k.timezone", "Time zone", k.timezone)}${fld("k.state", "State", k.state)}
+        <div class="card-h mt"><h2>Location</h2></div>${fld("l.label", "Label", loc.label)}${fld("l.address", "Address", loc.address)}${fld("l.city", "City", loc.city)}
+        ${fld("l.state", "State", loc.state)}${fld("l.zip", "ZIP", loc.zip)}${fld("l.latitude", "Latitude", loc.latitude)}${fld("l.longitude", "Longitude", loc.longitude)}
+        ${can() ? '<div class="toolbar mt"><button class="primary">Save</button></div>' : ""}</form>
+      <div><div class="card"><div class="card-h"><h2>Provisioning</h2></div><p class="muted">Files for setting up or re-pointing this kiosk.</p>
+          <div class="row"><button id="rp">Reprovision file...</button><a class="button" href="/api/provisioning/installer/${esc(id)}.json">Installer settings.json</a><a class="button" href="/api/provisioning/ca.crt">Backend CA</a></div></div>
+        <div class="card flush mt"><div class="card-h"><h2>IoT certificates</h2></div>${table(a.certificates, [{ key: "certificate_id", label: "Certificate", render: (v) => `<code>${short(v)}</code>` },
+          { key: "created_at", label: "Issued" }, { key: "revoked_at", label: "", right: true, render: (v, r) => v ? '<span class="st mute">Revoked</span>'
+            : can() ? `<button class="sm danger" data-rev="${esc(r.certificate_id)}">Revoke</button>` : '<span class="st ok">Active</span>' }], { pad: true, empty: "None issued yet." })}</div></div></div>`;
+    $("#rp").onclick = () => reprovisionDialog(id, k.market);
+    $$("button[data-rev]").forEach((b) => (b.onclick = async () => {
+      if (!confirm("Revoke this certificate? The kiosk's MQTT connection is refused until it gets a new one.")) return;
+      await act(() => api("/provisioning/certificates/revoke", { body: { certificate_id: b.dataset.rev } }), "Revoked"); route();
+    }));
+    $("#kf").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const body = { kiosk: {}, location: {} };
+      for (const [n, v] of new FormData(e.target)) { const [g, f] = n.split("."); body[g === "k" ? "kiosk" : "location"][f] = v; }
+      await act(() => api("/kiosks/" + id, { method: "PUT", body }), "Saved");
+    });
+  }
 };
 
 // Settings file for kiosk/reprovision: run `rb-reprovision apply <file>` on the kiosk (elevated).
@@ -199,13 +388,14 @@ function reprovisionDialog(id, market) {
   const root = modal(`<h3>Reprovision a kiosk</h3>
     <p class="muted">Downloads the settings file for <code>rb-reprovision apply</code> (kiosk/reprovision in the repository):
     hosts entries, the backend CA, store ID, engine registry, Update Manager / Update Client / Kiosk Client / Device Service URLs.</p>
-    <form id="rpf" class="card">
+    <form id="rpf">
       <label>Kiosk (store) ID <input name="kiosk" required value="${esc(id)}" size="8"></label>
       <label>Backend address for the hosts file <input name="address" placeholder="BACKEND_PUBLIC_IP"></label>
       <label>or your own DNS domain <input name="base_domain" placeholder="e.g. kiosk.example.net (no hosts entries)"></label>
       <label>Market <input name="market" value="${esc(market || "")}"></label>
       <label>URL rewrites, one OLD=NEW per line <textarea name="rewrite" rows="3" placeholder="https://old-host=https://dataservice.kiosk.prod.redbox.com"></textarea></label>
-      <button>Download</button></form>`);
+      <div class="toolbar mt"><button class="primary">Download</button><button type="button" id="cl">Cancel</button></div></form>`);
+  $("#cl", root).onclick = closeModal;
   $("#rpf", root).addEventListener("submit", (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
@@ -221,7 +411,7 @@ const FILE_TYPES = ["UpdateClientServiceLogs", "KioskClientServiceLogs", "KioskE
 function peekDialog(id) {
   const m = modal(`<h3>Peek files on kiosk ${esc(id)}</h3><label>File type <select id="pt">${FILE_TYPES.map((t) => `<option>${t}</option>`).join("")}</select></label>
     <label>Or any folder path <input id="pp" placeholder="C:\\ProgramData\\Redbox"></label>
-    <button class="primary" id="go">Peek</button> <button id="cl">Close</button><div id="out" class="mt"></div>`);
+    <div class="toolbar mt"><button class="primary" id="go">Peek</button><button id="cl">Close</button></div><div id="out" class="mt"></div>`);
   $("#cl", m).onclick = closeModal;
   $("#go", m).onclick = async () => {
     $("#out", m).textContent = "Waiting for the kiosk...";
@@ -232,13 +422,13 @@ function peekDialog(id) {
 function uploadDialog(id) {
   const m = modal(`<h3>Upload files from kiosk ${esc(id)}</h3><label>File type <select id="ut">${FILE_TYPES.map((t) => `<option>${t}</option>`).join("")}</select></label>
     <label>File names (comma separated, from Peek) <input id="un"></label>
-    <button class="primary" id="go">Upload</button> <button id="cl">Close</button><div id="out" class="mt"></div>`);
+    <div class="toolbar mt"><button class="primary" id="go">Upload</button><button id="cl">Close</button></div><div id="out" class="mt"></div>`);
   $("#cl", m).onclick = closeModal;
   $("#go", m).onclick = async () => {
     $("#out", m).textContent = "Waiting for the kiosk...";
     const names = $("#un", m).value.split(",").map((s) => s.trim()).filter(Boolean);
     const r = await act(() => api("/jobs/upload", { body: { kiosk_id: id, fileType: $("#ut", m).value, fileNames: names, zip: true } }));
-    $("#out", m).innerHTML = `<pre>${esc(JSON.stringify(r.response, null, 2) || "no answer")}</pre><p>Stored as <code>${esc(r.s3Key)}</code>; see Remote jobs &gt; Uploaded files.</p>`;
+    $("#out", m).innerHTML = `<pre>${esc(JSON.stringify(r.response, null, 2) || "no answer")}</pre><p>Stored as <code>${esc(r.s3Key)}</code>; it is listed on the kiosk's Files tab.</p>`;
   };
 }
 
@@ -328,9 +518,10 @@ routes.tables = async () => {
 };
 
 routes.pricing = async () => {
-  title("Pricing & promotions");
+  title("Pricing & offers");
   const tabs = [["pricing_default", "Default rental"], ["pricing_rental", "Rental by price level"], ["pricing_purchase", "Purchase"],
-    ["promo_codes", "Promo codes"], ["return_promo", "Return promo"], ["campaigns", "Campaigns"], ["subscription_plans", "Subscriptions"], ["ads", "Ads"]];
+    ["promo_codes", "Promo codes"], ["promo_redemptions", "Redemptions"], ["return_promo", "Return promo"], ["return_promo_issued", "Return codes issued"],
+    ["customer_offers", "Customer offers"], ["campaigns", "Campaigns"], ["subscription_plans", "Subscriptions"], ["rbplus_campaigns", "Redbox+ campaigns"], ["ads", "Ads"]];
   view().innerHTML = `<div class="tabs">${tabs.map(([n, l], i) => `<button data-t="${n}" class="${i ? "" : "on"}">${esc(l)}</button>`).join("")}</div>
     <p class="muted">Kiosk Clients refresh pricing every 30 min-26 h and campaigns every 30 min; <a href="#/jobs">Remote jobs</a> can force a refresh.</p><div id="pt"></div>`;
   const show = (n) => { $$(".tabs button").forEach((b) => b.classList.toggle("on", b.dataset.t === n)); editorView(n, $("#pt")); };
@@ -346,29 +537,121 @@ const csv = (s) => String(s || "").split(",").map((x) => x.trim()).filter(Boolea
 const thumb = (name) => name ? `<img src="/api/catalog/images/${encodeURIComponent(name)}" alt="" loading="lazy" style="height:48px">` : "";
 
 routes.catalog = async (tab = "titles") => {
-  title("Catalog");
   if (!catalogLookups) catalogLookups = await api("/catalog/lookups");
-  view().innerHTML = `<div class="tabs">${CATALOG_TABS.map(([n, l]) => `<a class="button ${n === tab ? "on" : ""}" href="#/catalog/${n}">${esc(l)}</a>`).join("")}</div><div id="ct"></div>`;
+  const s = await api("/catalog");
+  const titles = (s.tables.find((t) => t.name === "ProductCatalog") || {}).rows || 0;
+  const st = s.state || {};
+  const dirty = st.changed_at && (!st.stamped_at || st.changed_at > st.stamped_at);
+  view().innerHTML = head("Catalog", `${num(titles)} titles · ${num(s.images)} box-art images${dirty ? " · changes not yet published" : ""}`,
+    can() ? `<a class="button" href="#/catalog/publish">${ic("upload")}Import</a><a class="button primary" href="#/catalog/publish">${ic("rocket")}Build &amp; publish</a>` : "") +
+    `<div class="tabs">${CATALOG_TABS.map(([n, l]) => `<a href="#/catalog/${n}" class="${n === tab ? "on" : ""}">${esc(l)}</a>`).join("")}</div><div id="ct"></div>`;
   await ({ titles: catalogTitles, groups: catalogGroups, barcodes: catalogBarcodes, tables: catalogTables, publish: catalogPublish }[tab] || catalogTitles)($("#ct"));
 };
 
+// Catalog helpers: product type -> family (1 movies, 2 games), format pill, placeholder colours.
+const typeInfo = (id) => (catalogLookups.types.find((t) => String(t.product_type_id) === String(id)) || { product_type_name: "?", product_family_id: 1 });
+const isGameType = (id) => Number(typeInfo(id).product_family_id) === 2;
+const ART_COLORS = ["#E42045,#380B44", "#F05C27,#8F0E15", "#792D8D,#060208", "#1D5FB8,#2F1E36", "#D92E6C,#481B54", "#555F64,#060208", "#2E7D5B,#12081A"];
+function fmtPill(typeId, soon) {
+  if (soon) return '<span class="fmt soon">Coming soon</span>';
+  const t = typeInfo(typeId), n = t.product_type_name;
+  const cls = isGameType(typeId) ? "game" : /blu|4k/i.test(n) ? "blu" : /digital/i.test(n) ? "digital" : "";
+  return `<span class="fmt ${cls}">${esc(n)}</span>`;
+}
+function artBox(r, big) {
+  const soon = r.release_date && r.release_date > new Date().toISOString().replace(/\D/g, "").slice(0, 14);
+  const c = ART_COLORS[Number(r.product_id) % ART_COLORS.length];
+  // placeholder colours and name underneath; the box art covers them and removes itself if the image is missing
+  return `<div class="art ph" style="background:linear-gradient(160deg,${c})">${fmtPill(r.product_type_id, soon)}<span class="nm">${esc(r.long_name)}</span>
+    ${r.image_file ? `<img src="/api/catalog/images/${encodeURIComponent(r.image_file)}" alt="" loading="lazy" onerror="this.remove()">` : ""}</div>`;
+}
+
 async function catalogTitles(root) {
   const q = query();
-  root.innerHTML = `<div class="toolbar"><input id="cq" class="grow" placeholder="Title or product id" value="${esc(q.q || "")}">
-    <button id="cg">Search</button><button class="primary" id="cn">New title</button></div><div id="cl"></div>`;
-  const types = Object.fromEntries(catalogLookups.types.map((t) => [String(t.product_type_id), t.product_type_name]));
-  const load = async () => {
-    const d = await api("/catalog/titles?" + new URLSearchParams({ q: $("#cq").value, limit: "100" }));
-    $("#cl").innerHTML = `<p class="muted">${esc(d.total)} titles${d.total > d.rows.length ? `, newest ${d.rows.length} shown` : ""}. Changes go to kiosks when the catalog is published (Import &amp; publish).</p>` +
-      table(d.rows, [{ key: "image_file", label: "", render: thumb }, { key: "product_id", label: "Product id" }, { key: "long_name", label: "Title", wrap: true },
-        { key: "product_type_id", label: "Type", render: (v) => esc(types[v] || v) }, { key: "release_date", label: "Released", render: (v) => esc((v || "").slice(0, 4)) },
-        { key: "studio", label: "Studio" }], { onclick: true, empty: "No titles. Import a catalog first (Import & publish)." });
-    bindRows($("#cl"), d.rows, (r) => titleDialog(r.product_id, load));
+  const st = { q: q.q || "", chip: "all", type: "", offset: 0, sel: null, rows: [] };
+  root.innerHTML = `<div class="cat-layout"><div>
+      <div class="toolbar"><div class="search grow">${ic("search")}<input id="cq" placeholder="Title, product id or barcode" value="${esc(st.q)}"></div>
+        ${can() ? `<button class="primary" id="cn">${ic("plus")}New title</button>` : ""}</div>
+      <div class="chips" id="chips"></div><div id="cl"></div></div>
+    <div class="card detail" id="cd"><p class="muted">Pick a title to see and edit it.</p></div></div>`;
+  const chipDefs = (d) => {
+    const games = d.by_type.filter((t) => isGameType(t.product_type_id));
+    const movies = d.by_type.filter((t) => !isGameType(t.product_type_id));
+    return [["all", "All"], ["newest", "New releases"], ...movies.slice(0, 4).map((t) => ["t" + t.product_type_id, typeInfo(t.product_type_id).product_type_name]),
+      ["games", `Games · ${num(games.reduce((a, t) => a + Number(t.n), 0))}`],
+      ...(st.chip === "games" || st.chip.startsWith("g") ? games.map((t) => ["g" + t.product_type_id, `${typeInfo(t.product_type_id).product_type_name} · ${num(t.n)}`]) : []),
+      ["soon", `Coming soon · ${num(d.counts.soon)}`], ["changed", `Changed since build · ${num(d.counts.changed)}`], ["noart", `No box art · ${num(d.counts.noart)}`]];
   };
-  $("#cg").onclick = load; $("#cq").addEventListener("keydown", (e) => e.key === "Enter" && load());
-  $("#cn").onclick = () => titleDialog(null, load);
+  const params = () => {
+    const p = { q: $("#cq").value, limit: "60", offset: String(st.offset) };
+    const c = st.chip;
+    if (c === "newest") p.newest = "true";
+    else if (c === "games") p.family = "2";
+    else if (c === "soon") p.soon = "true";
+    else if (c === "changed") p.changed = "true";
+    else if (c === "noart") p.noart = "true";
+    else if (/^[tg]\d+$/.test(c)) p.types = c.slice(1);
+    return new URLSearchParams(p);
+  };
+  const load = async (more) => {
+    if (!more) st.offset = 0;
+    const d = await api("/catalog/browse?" + params());
+    st.rows = more ? st.rows.concat(d.rows) : d.rows;
+    $("#chips").innerHTML = chipDefs(d).map(([k, l]) => `<button class="chip ${st.chip === k || (k === "games" && st.chip.startsWith("g")) ? "on" : ""}" data-c="${k}">${esc(l)}</button>`).join("");
+    $$("#chips .chip").forEach((b) => (b.onclick = () => { st.chip = b.dataset.c === st.chip && b.dataset.c !== "all" ? "all" : b.dataset.c; load(); }));
+    $("#cl").innerHTML = st.rows.length ? `<div class="posters">${st.rows.map((r, i) => `<div class="poster ${st.sel === r.product_id ? "sel" : ""}" data-i="${i}">${artBox(r)}
+        <div class="i"><b>${esc(r.long_name)}</b>${esc(ratingName(r.rating_id))}${r.release_date ? " · " + esc(r.release_date.slice(0, 4)) : ""} · ${r.discs ? num(r.discs) + " in kiosks" : "not stocked"}${r.changed ? ' · <span style="color:#FFC2CE">changed</span>' : ""}</div></div>`).join("")}</div>
+      ${d.total > st.rows.length ? `<div class="toolbar mt"><button id="more">Show more (${num(d.total - st.rows.length)} left)</button></div>` : ""}`
+      : `<p class="muted">${d.counts.total ? "No title matches." : "No catalog yet. Import one under Import & publish."}</p>`;
+    $$(".poster", $("#cl")).forEach((p) => (p.onclick = () => { st.sel = st.rows[+p.dataset.i].product_id; $$(".poster.sel").forEach((x) => x.classList.remove("sel")); p.classList.add("sel"); detail(st.sel); }));
+    if ($("#more")) $("#more").onclick = () => { st.offset = st.rows.length; load(true); };
+  };
+  const detail = async (pid) => {
+    const box = $("#cd");
+    const d = await api("/catalog/titles/" + pid);
+    const v = d.value || {};
+    const game = isGameType(v.product_type_id);
+    const L = catalogLookups;
+    const fam = game ? 2 : 1;
+    const ratings = L.ratings.filter((r) => Number(r.product_family_id) === fam);
+    const famRow = L.families.find((f) => Number(f.product_family_id) === fam);
+    const allowed = new Set(Object.keys((famRow && famRow.genres) || {}));
+    const genres = L.genres.filter((g) => !allowed.size || allowed.has(String(g.genre_id)));
+    const on = new Set(Object.keys(v.genres || {}).filter((k) => v.genres[k]));
+    const ro = can() ? "" : "disabled";
+    const f = (k, l, val, ph = "") => `<div class="field"><span>${esc(l)}</span><input data-f="${k}" value="${esc(val ?? "")}" placeholder="${esc(ph)}" ${ro}></div>`;
+    box.innerHTML = `${artBox({ ...v, product_id: pid }, true)}
+      <div class="row mt"><h2 style="font-size:17px">${esc(v.long_name)}</h2><span class="grow"></span>${st.rows.find((r) => r.product_id === pid && r.changed) ? '<span class="tag red">changed</span>' : ""}</div>
+      <div class="muted" style="font-weight:600;margin:4px 0 10px">Product ${esc(pid)} · ${num(d.groups.length)} groups · ${num(d.barcode_count)} barcodes</div>
+      <form id="qf">${f("long_name", "Title", v.long_name)}${f("sort_name", "Sort name", v.sort_name)}${f("release_date", "Release date", v.release_date, "yyyyMMdd")}
+        <div class="field"><span>${game ? "Platform" : "Format"}</span><select data-f="product_type_id" ${ro}>${L.types.filter((t) => Number(t.product_family_id) === fam || (!game && Number(t.product_family_id) === 3))
+          .map((t) => `<option value="${esc(t.product_type_id)}" ${String(t.product_type_id) === String(v.product_type_id) ? "selected" : ""}>${esc(t.product_type_name)}</option>`).join("")}</select></div>
+        <div class="field"><span>Rating</span><select data-f="rating_id" ${ro}>${ratings.map((r) => `<option value="${esc(r.rating_id)}" ${String(r.rating_id) === String(v.rating_id) ? "selected" : ""}>${esc(r.name)}</option>`).join("")}</select></div>
+        ${game ? `<div class="field"><span>Accessory</span><select data-f="sub_platform_id" ${ro}><option value="">none</option>${L.subplatforms.map((s) => `<option value="${esc(s.subplatform_id)}" ${String(s.subplatform_id) === String(v.sub_platform_id) ? "selected" : ""}>${esc(s.subplatform_name)}</option>`).join("")}</select></div>
+          ${f("number_of_players_text", "Players", v.number_of_players_text, "e.g. 1-4 players")}` : `${f("running_time", "Running time", v.running_time, "h:mm")}`}
+        ${f("studio", game ? "Publisher" : "Studio", v.studio)}
+        <div class="field" style="align-items:start"><span>Genres</span><div class="genres">${genres.map((g) => `<label><input type="checkbox" data-g="${esc(g.genre_id)}" ${on.has(String(g.genre_id)) ? "checked" : ""} ${ro}><span>${esc(g.genre_name)}</span></label>`).join("")}</div></div>
+        <div class="row mt"><button type="button" class="sm" id="full">Full editor</button><span class="grow"></span>${can() ? `<button class="sm primary">${ic("check")}Save</button>` : ""}</div></form>`;
+    $("#full", box).onclick = () => titleDialog(pid, () => { load(); detail(pid); });
+    $("#qf", box).addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fields = {};
+      $$("[data-f]", box).forEach((el) => {
+        const k = el.dataset.f; let val = el.value;
+        if (["product_type_id", "rating_id"].includes(k)) val = Number(val);
+        else if (k === "sub_platform_id") { if (val === "" && v.sub_platform_id == null) return; val = val === "" ? null : Number(val); }
+        fields[k] = val;
+      });
+      fields.genres = $$("[data-g]", box).filter((c) => c.checked).map((c) => +c.dataset.g);
+      await act(() => api("/catalog/titles", { body: { product_id: pid, fields } }), "Saved; publish the catalog to send it to kiosks");
+      load();
+    });
+  };
+  $("#cq").addEventListener("keydown", (e) => e.key === "Enter" && load());
+  if ($("#cn")) $("#cn").onclick = () => titleDialog(null, load);
   await load();
 }
+const ratingName = (id) => { const r = catalogLookups.ratings.find((x) => String(x.rating_id) === String(id)); return r ? r.name : ""; };
 
 const TITLE_FIELDS = [["long_name", "Title"], ["sort_name", "Sort name"], ["release_date", "Release date (yyyyMMdd or yyyyMMddHHmmss)"],
   ["national_street_date", "Street date"], ["running_time", "Running time (h:mm)"], ["studio", "Studio"], ["stars", "Stars"],
@@ -387,6 +670,8 @@ async function titleDialog(pid, reload) {
       ${TITLE_FIELDS.map(([k, l]) => `<label>${esc(l)} <input data-f="${k}" value="${esc(v[k] ?? "")}"></label>`).join("")}
       <label>Product type <select data-f="product_type_id">${opt(L.types, "product_type_id", "product_type_name", v.product_type_id ?? 1)}</select></label>
       <label>Rating <select data-f="rating_id">${opt(L.ratings, "rating_id", "name", v.rating_id ?? 10)}</select></label>
+      <label>Game accessory (games only) <select data-f="sub_platform_id"><option value="">none</option>${opt(L.subplatforms, "subplatform_id", "subplatform_name", v.sub_platform_id)}</select></label>
+      <label>Players (games only) <input data-f="number_of_players_text" value="${esc(v.number_of_players_text || "")}" placeholder="e.g. 1-4 players"></label>
       <label>Starring (comma separated) <input data-f="starring" value="${esc((v.starring || []).join(", "))}"></label>
       <label>Directors (comma separated) <input data-f="directors" value="${esc((v.directors || []).join(", "))}"></label>
       <label><input type="checkbox" data-f="closed_captioned" ${v.closed_captioned ? "checked" : ""}> closed captioned</label>
@@ -430,6 +715,7 @@ async function titleDialog(pid, reload) {
       const k = el.dataset.f;
       let val = el.type === "checkbox" ? el.checked : el.value;
       if (["starring", "directors"].includes(k)) val = csv(val);
+      else if (k === "sub_platform_id") { if (val === "" && v.sub_platform_id == null) return; val = val === "" ? null : Number(val); }
       else if (["stars", "coming_soon_days", "product_type_id", "rating_id", "box_office_gross"].includes(k)) val = val === "" ? 0 : Number(val);
       else if (k === "sellthru_price") val = val === "" ? 0 : Number(val);
       if (pid || val !== "") fields[k] = val;
@@ -602,43 +888,34 @@ async function catalogPublish(root) {
   if (d.jobs.some((j) => j.status === "running")) poll();
 }
 
-// ----------------------------------------------------------------------------------- transactions
-routes.transactions = async () => {
-  title("Transactions");
+// --------------------------------------------------------------------------------- rentals & returns
+// What kiosks rented out and took back. No money: the kiosks cannot take real payments (PAYMENT_MODE approves).
+routes.rentals = async (tab = "rentals") => {
   const q = query();
-  view().innerHTML = `<div class="toolbar"><input id="xq" placeholder="Reference, e-mail, CPN, last four" class="grow" value="${esc(q.q || "")}">
-    <input id="xk" placeholder="Kiosk" size="8" value="${esc(q.kiosk || "")}">
-    <select id="xkind"><option value="">any kind</option><option>authorize</option><option>giftcard</option><option>pickup</option><option>reservation</option><option>offline</option></select>
-    <select id="xs"><option value="">any status</option><option>authorized</option><option>declined</option><option>reconciled</option></select>
-    <button id="xg">Search</button></div>
-    <div class="tabs"><a class="button" href="#/data/rentals">Rentals</a><a class="button" href="#/data/returns">Returns</a><a class="button" href="#/data/reservations">Reservations</a><a class="button" href="#/data/cards">Cards</a></div><div id="xt"></div>`;
+  view().innerHTML = head("Rentals & returns", "Discs rented, bought and returned at the kiosks") + `
+    <div class="tabs"><a href="#/rentals/rentals" class="${tab === "rentals" ? "on" : ""}">Rentals</a><a href="#/rentals/returns" class="${tab === "returns" ? "on" : ""}">Returns</a></div>
+    <div class="toolbar"><div class="search grow">${ic("search")}<input id="rq" placeholder="Barcode or title" value="${esc(q.q || "")}"></div>
+      <input id="rk" placeholder="Kiosk" size="8" value="${esc(q.kiosk || "")}">
+      ${tab === "rentals" ? '<select id="rs"><option value="">any status</option><option>out</option><option>returned</option><option>purchased</option><option>not_vended</option></select>' : ""}</div>
+    <div class="card flush" id="rt"></div>`;
   const load = async () => {
-    const p = new URLSearchParams();
-    if ($("#xq").value) p.set("q", $("#xq").value);
-    if ($("#xk").value) p.set("kiosk_id", $("#xk").value);
-    if ($("#xkind").value) p.set("kind", $("#xkind").value);
-    if ($("#xs").value) p.set("status", $("#xs").value);
-    const d = await api("/transactions?" + p);
-    $("#xt").innerHTML = `<p class="muted">${esc(d.total)} transactions</p>` + table(d.rows, [
-      { key: "reference_number", label: "Reference" }, { key: "created_at", label: "Time" }, { key: "kiosk_id", label: "Kiosk" },
-      { key: "kind", label: "Kind" }, { key: "status", label: "Status", render: (v) => pill(v, v === "declined" ? "bad" : v === "reconciled" ? "ok" : "warn") },
-      { key: "amount", label: "Amount" }, { key: "items", label: "Items" }, { key: "last_four", label: "Card", render: (v, r) => esc((r.is_gift_card ? "gift " : "") + (v ? "..." + v : "")) },
-      { key: "email", label: "Customer" }, { key: "errors", label: "Errors", wrap: true, render: (v) => v && v.length ? `<code>${esc(JSON.stringify(v))}</code>` : "" }], { onclick: true });
-    bindRows($("#xt"), d.rows, (r) => txDialog(r.id));
+    const p = new URLSearchParams({ kind: tab, q: $("#rq").value, kiosk_id: $("#rk").value, status: $("#rs") ? $("#rs").value : "" });
+    const d = await api("/rentals?" + p);
+    const titleCell = (v, r) => r.title ? `${esc(r.title)} <span class="dim">${esc(r.type || "")}</span>` : `<span class="dim">product ${esc(v ?? "?")}</span>`;
+    $("#rt").innerHTML = `<p class="muted" style="padding:14px 16px 0">${num(d.total)} ${tab}</p>` + (tab === "rentals" ? table(d.rows, [
+      { key: "rented_at", label: "Rented", render: (v) => `<span class="dim">${esc(fmtDate(v))}</span>` }, { key: "kiosk_id", label: "Kiosk", render: (v) => `<a class="link" href="#/kiosk/${esc(v)}">${esc(v)}</a>` },
+      { key: "product_id", label: "Title", render: titleCell }, { key: "barcode" },
+      { key: "status", render: (v) => v === "out" ? '<span class="st warn"><span class="dot warn"></span>Out</span>' : `<span class="st mute">${esc(v)}</span>` },
+      { key: "returned_at", label: "Returned", render: (v, r) => v ? `${esc(ago(v))}${r.return_kiosk_id && r.return_kiosk_id !== r.kiosk_id ? ` to ${esc(r.return_kiosk_id)}` : ""}` : "" }], { pad: true, empty: "No rentals yet." })
+      : table(d.rows, [{ key: "return_date", label: "Returned", render: (v, r) => `<span class="dim">${esc(fmtDate(v || r.created_at))}</span>` },
+        { key: "kiosk_id", label: "Kiosk", render: (v) => `<a class="link" href="#/kiosk/${esc(v)}">${esc(v)}</a>` }, { key: "product_id", label: "Title", render: titleCell },
+        { key: "barcode" }, { key: "deck", render: (v, r) => v != null ? `deck ${esc(v)}, slot ${esc(r.slot)}` : "" }], { pad: true, empty: "No returns yet." }));
   };
-  $("#xg").onclick = load; $("#xq").addEventListener("keydown", (e) => e.key === "Enter" && load());
+  $("#rq").addEventListener("keydown", (e) => e.key === "Enter" && load()); $("#rk").addEventListener("change", load);
+  if ($("#rs")) $("#rs").onchange = load;
   await load();
 };
-async function txDialog(id) {
-  const d = await api("/transactions/" + id);
-  const m = modal(`<h3>Transaction ${esc(d.transaction.reference_number)}</h3>
-    ${table(d.rentals, [{ key: "barcode" }, { key: "product_id", label: "Product" }, { key: "product_type", label: "Type" }, { key: "status" }, { key: "vend_status", label: "Vend" }, { key: "rented_at", label: "Rented" }, { key: "returned_at", label: "Returned" }, { key: "extra_charge", label: "Extra" }])}
-    <h3>Returns</h3>${table(d.returns, [{ key: "barcode" }, { key: "kiosk_id", label: "Kiosk" }, { key: "return_date", label: "Date" }, { key: "deck" }, { key: "slot" }])}
-    <h3>Customer / card</h3><pre>${esc(JSON.stringify({ customer: d.customer, card: d.card, promos: d.promos }, null, 2))}</pre>
-    <h3>Authorize request</h3><pre>${esc(JSON.stringify(d.transaction.request, null, 2))}</pre>
-    <h3>Reconcile</h3><pre>${esc(JSON.stringify(d.transaction.reconcile, null, 2))}</pre><div class="mt"><button id="cl">Close</button></div>`);
-  $("#cl", m).onclick = closeModal;
-}
+routes.transactions = () => routes.rentals();
 
 // ---------------------------------------------------------------------------------------- updates
 routes.updates = async () => {
@@ -716,76 +993,56 @@ const targetText = (t, n) => (t === "all" ? "everyone" : `${t} ${n}`);
 const releasedPill = (v) => (v ? pill("released", "ok") : pill("unreleased", "warn"));
 
 routes.releases = async (repoName) => {
-  if (repoName) return releaseRepo(decodeURIComponent(repoName));
-  title("Releases");
-  const [d, tokens] = await Promise.all([api("/releases"), api("/releases/tokens")]);
-  view().innerHTML = `<p class="muted">Builds from the Software repository's <code>build/release.ps1</code>. A release is published
-      <b>unreleased</b>: no kiosk gets it until you roll it out to a store, a market or everyone. File-set releases become
-      file-set revisions; deploy those on <a href="#/filesets">File sets</a>.</p>
-    <form id="up" class="card inline"><label>Release zip <input type="file" name="file" accept=".zip" required></label>
-      <label><input type="checkbox" name="allow_new" value="true"> also add files the repository does not have yet</label>
-      <button class="primary">Publish</button></form>
-    <div id="upres"></div>
-    <h3>Repositories</h3>${table(d.repositories, [{ key: "name", label: "Repository" },
-      { key: "served", label: "Served by default", render: (v, r) => `<code>${short(v)}</code> ${esc(r.served_label || "")}` },
-      { key: "newest", label: "Newest revision", render: (v, r) => v ? `<code>${short(v)}</code> ${esc(r.newest_version || r.newest_label || "")} ${releasedPill(r.newest_released)}` : "" },
-      { key: "unreleased", label: "Unreleased" }, { key: "rollouts", label: "Store / market rollouts" }], { onclick: true })}
-    <h3>Recent rollouts and rollbacks</h3>${table(d.log, [{ key: "created_at", label: "When" }, { key: "repo", label: "Repository" },
-      { key: "action" }, { key: "target_type", label: "Target", render: (v, r) => esc(targetText(v, r.target)) },
-      { key: "head", label: "Now served", render: (v, r) => v ? `<code>${short(v)}</code> ${esc(r.head_label || "")}` : "the default" },
-      { key: "actor", label: "By" }], { empty: "Nothing rolled out yet." })}
-    <h3>API tokens (CI)</h3><p class="muted">Bearer tokens for <code>/api/ci/*</code> (<code>scripts/rb-release.py</code>, the Software
-      repository's release workflow). <b>publish</b> uploads releases, <b>deploy</b> rolls out and back; every token can read status.
-      The token is shown once.</p>
-    <form id="tk" class="card inline"><label>Name <input name="name" required placeholder="ci-publish"></label>
-      <label><input type="checkbox" name="scopes" value="publish" checked> publish</label>
-      <label><input type="checkbox" name="scopes" value="deploy"> deploy</label><button class="primary">Create token</button></form>
-    <div class="mt">${table(tokens, [{ key: "name" }, { key: "scopes", render: (v) => esc((v || []).join(", ")) },
-      { key: "created_at", label: "Created" }, { key: "last_used_at", label: "Last used", render: (v) => esc(ago(v)) },
-      { key: "revoked_at", label: "", render: (v, r) => v ? pill("revoked") : `<button class="danger" data-revoke="${esc(r.name)}">Revoke</button>` }],
-      { empty: "No tokens." })}</div>`;
-  bindRows(view(), d.repositories, (r) => { location.hash = "#/releases/" + encodeURIComponent(r.name); });
-  $("#up").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    if (!fd.get("allow_new")) fd.set("allow_new", "false");
-    const btn = $("button", e.target); btn.disabled = true; btn.textContent = "Publishing...";
-    try {
-      const x = await act(() => api("/releases/upload", { form: fd }), (x) => x.fileset ? `File set ${x.fileset} revision ${x.revision} created`
-        : x.revision ? `Published ${x.label} (unreleased)` : "Nothing changed");
-      $("#upres").innerHTML = `<div class="card mt"><div class="kv">${Object.entries(x).map(([k, v]) =>
-        `<div>${esc(k)}</div><div>${Array.isArray(v) ? esc(v.join(", ") || "-") : cell(v)}</div>`).join("")}</div>
-        ${x.repository && x.revision ? `<p><a href="#/releases/${encodeURIComponent(x.repository)}">Roll it out</a></p>` : ""}
-        ${x.fileset ? `<p><a href="#/filesets">Deploy it</a></p>` : ""}</div>`;
-    } finally { btn.disabled = false; btn.textContent = "Publish"; }
-  });
-  $("#tk").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    const x = await act(() => api("/releases/tokens", { body: { name: fd.get("name"), scopes: fd.getAll("scopes") } }));
-    const m = modal(`<h3>Token ${esc(x.name)}</h3><p>Copy it now; it is not shown again. Store it as the CI secret
-      <code>RB_API_TOKEN</code>.</p><pre id="tok">${esc(x.token)}</pre>
-      <div class="toolbar mt"><button id="cp">Copy</button><span class="grow"></span><button id="cl" class="primary">Done</button></div>`);
-    $("#cp", m).onclick = () => navigator.clipboard.writeText(x.token).then(() => toast("Copied"));
-    $("#cl", m).onclick = () => { closeModal(); routes.releases(); };
-  });
-  $$("button[data-revoke]").forEach((b) => (b.onclick = async () => {
-    if (!confirm(`Revoke token ${b.dataset.revoke}? CI using it stops working.`)) return;
-    await act(() => api("/releases/tokens/revoke", { body: { name: b.dataset.revoke } }), "Revoked"); routes.releases();
-  }));
+  const d = await api("/releases");
+  const name = repoName ? decodeURIComponent(repoName) : (d.repositories[0] || {}).name;
+  view().innerHTML = head("Releases", "Builds are published unreleased. Nothing reaches a kiosk until you roll it out.",
+    (can("admin") ? `<a class="button" href="#/access/tokens">CI tokens</a>` : "") + (can() ? `<button class="primary" id="pub">${ic("upload")}Publish a release</button>` : "")) + `
+    <div class="split"><div class="card list">${d.repositories.map((r) => `<a href="#/releases/${encodeURIComponent(r.name)}" class="${r.name === name ? "on" : ""}">${esc(r.name)}
+        ${r.unreleased ? '<span class="label red">new</span>' : `<span>${esc(r.served_label || short(r.served) || "")}</span>`}</a>`).join("") || '<p class="muted">No repositories yet.</p>'}</div>
+      <div id="rr"></div></div>`;
+  if ($("#pub")) $("#pub").onclick = () => {
+    const m = modal(`<h3>Publish a release</h3><p class="muted">A zip from the Software repository's <code>build/release.ps1</code>. It is published
+        <b>unreleased</b>; file-set releases become file-set revisions (deploy those on <a href="#/filesets">File sets</a>).</p>
+      <form id="up"><label>Release zip <input type="file" name="file" accept=".zip" required></label>
+        <label><input type="checkbox" name="allow_new" value="true"> also add files the repository does not have yet</label>
+        <div class="toolbar mt"><button class="primary">Publish</button><button type="button" id="cl">Cancel</button></div></form><div id="upres"></div>`);
+    $("#cl", m).onclick = closeModal;
+    $("#up", m).addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      if (!fd.get("allow_new")) fd.set("allow_new", "false");
+      const btn = $("button", e.target); btn.disabled = true; btn.textContent = "Publishing...";
+      try {
+        const x = await act(() => api("/releases/upload", { form: fd }), (x) => x.fileset ? `File set ${x.fileset} revision ${x.revision} created`
+          : x.revision ? `Published ${x.label} (unreleased)` : "Nothing changed");
+        $("#upres", m).innerHTML = `<div class="card mt"><div class="kv">${Object.entries(x).map(([k, v]) =>
+          `<div>${esc(k)}</div><div>${Array.isArray(v) ? esc(v.join(", ") || "-") : cell(v)}</div>`).join("")}</div>
+          ${x.repository && x.revision ? `<p><a href="#/releases/${encodeURIComponent(x.repository)}">Roll it out</a></p>` : ""}
+          ${x.fileset ? `<p><a href="#/filesets">Deploy it</a></p>` : ""}</div>`;
+      } finally { btn.disabled = false; btn.textContent = "Publish"; }
+    });
+  };
+  if (name) await releaseRepo(name, $("#rr"));
 };
 
-async function releaseRepo(name) {
-  title("Releases: " + name);
+async function releaseRepo(name, root) {
   const st = await api(`/releases/repo/${encodeURIComponent(name)}`);
   const L = st.labels;
   for (const r of st.revisions) L[r.hash] = L[r.hash] || { label: r.label, version: r.version };
   const stateCls = { current: "ok", behind: "warn", ahead: "bad", "unknown head": "bad", "no report": "" };
-  view().innerHTML = `<p><a href="#/releases">All repositories</a> · <a href="#/updates">Update Service</a></p>
-    <div class="card"><div class="kv"><div>Served by default</div><div>${revName(st.default_head, L)}</div>
-      <div>Rule</div><div class="muted">A store gets its own rollout, else its market's, else the default (the pin, else the newest released revision).
-        updatemgrd never moves back: a store past what it is served keeps its version until a revert reaches it.</div></div>
-      <div class="toolbar mt"><button id="rbAll">Roll everyone back...</button></div></div>
+  const byKind = (k) => st.rollouts.filter((r) => r.target_type === k);
+  const current = st.stores.filter((s) => s.state === "current").length;
+  const newest = st.revisions[0];
+  root.innerHTML = `<div class="card"><div class="card-h"><h2>${esc(name)}</h2><span class="grow"></span>${can() ? `<button class="sm" id="rbAll">${ic("undo")}Roll back...</button>
+        ${newest ? `<button class="sm primary" data-roll="${esc(newest.hash)}">Roll out ${esc(newest.version || newest.label || short(newest.hash))}</button>` : ""}` : ""}</div>
+      <div class="facts"><div><span>Everyone gets</span><b>${revName(st.default_head, L)}</b></div>
+        <div><span>Market rollouts</span><b>${byKind("market").map((r) => `${esc(r.target)} → ${revName(r.head, L)}`).join("<br>") || '<span class="muted">None</span>'}</b></div>
+        <div><span>Store rollouts</span><b>${byKind("store").map((r) => `${esc(r.target)} → ${revName(r.head, L)}`).join("<br>") || '<span class="muted">None</span>'}</b></div></div>
+      ${st.stores.length ? `<div class="row mt" style="font-size:12px;font-weight:600"><span>Stores up to date</span><span class="grow"></span>
+        <span class="muted">${current} of ${st.stores.length}${["behind", "ahead", "no report"].map((s) => { const n = st.stores.filter((x) => x.state === s).length; return n ? ` · ${n} ${s}` : ""; }).join("")}</span></div>
+        <div class="bar" style="margin-top:8px"><i style="width:${(current / st.stores.length) * 100}%"></i></div>` : ""}
+      <p class="muted" style="font-size:12px;margin:14px 0 0">A store gets its own rollout, else its market's, else the default (the pin, else the newest released revision).
+        updatemgrd never moves back: a store past what it is served keeps its version until a revert reaches it.</p></div>
     <h3>Revisions</h3>${table(st.revisions, [{ key: "seq" }, { key: "hash", render: (v) => `<code title="${esc(v)}">${short(v)}</code>` },
       { key: "version" }, { key: "label" }, { key: "released", label: "", render: releasedPill }, { key: "origin" },
       { key: "created_at", label: "Added" }, { key: "_", label: "", render: (v, r) => `<button data-roll="${esc(r.hash)}">Roll out...</button>` }])}
@@ -830,7 +1087,7 @@ async function releaseRepo(name) {
       if (!check(fd)) return;
       await act(() => api(`/releases/repo/${encodeURIComponent(name)}/rollout`, { body: { revision: fd.get("revision"), ...targetBody(fd) } }),
         (x) => `${targetText(x.target, x.name)} now gets ${x.label || x.head.slice(0, 10)}`);
-      closeModal(); releaseRepo(name);
+      closeModal(); route();
     });
   };
   const rollback = (pre = {}) => {
@@ -849,8 +1106,8 @@ async function releaseRepo(name) {
       if (x.not_removed && x.not_removed.length) {
         $("#bres", m).innerHTML = `<p class="error">These files were added after ${esc(x.to.slice(0, 10))} and stay on the kiosks:</p><pre>${esc(x.not_removed.join("\n"))}</pre>
           <button id="ok" class="primary">OK</button>`;
-        $("#ok", m).onclick = () => { closeModal(); releaseRepo(name); };
-      } else { closeModal(); releaseRepo(name); }
+        $("#ok", m).onclick = () => { closeModal(); route(); };
+      } else { closeModal(); route(); }
     });
   };
   $$("button[data-roll]").forEach((b) => (b.onclick = () => rollout(b.dataset.roll)));
@@ -915,7 +1172,7 @@ routes.broker = async () => {
 
 // -------------------------------------------------------------------------------- update packages
 routes.packages = async () => {
-  title("Update packages");
+  title("Data zips");
   const d = await api("/packages");
   view().innerHTML = `<p class="muted">Redbox update-store seeds (<code>data-&lt;date&gt;.zip</code>, the data file the store installer
     activates on a new kiosk) from <code>${esc(d.dir || "(no PACKAGES_DIR mounted)")}</code>, read-only. Each import becomes an edition; every
@@ -1092,7 +1349,7 @@ async function configFilesView(root) {
 
 // ---------------------------------------------------------------------------------------- jobs
 routes.jobs = async () => {
-  title("Remote jobs");
+  title("Remote commands");
   const [cmds, clients, reqs, uploads] = await Promise.all([api("/jobs/commands"), api("/jobs/clients"), api("/jobs/requests"), api("/uploads")]);
   view().innerHTML = `<div class="grid2">
     <form id="cf" class="card"><b>Send an IoT command</b> <span class="muted">(${clients.length} kiosk(s) connected)</span>
@@ -1165,6 +1422,221 @@ routes.logs = async () => {
   clearInterval(routes.logs.timer);
   routes.logs.timer = setInterval(() => { if ($("#lauto") && $("#lauto").checked && location.hash.startsWith("#/logs")) load(); }, 5000);
   await load();
+};
+
+// ---------------------------------------------------------------------------------- system health
+const bytes = (n) => { n = Number(n || 0); const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0; while (n >= 1024 && i < 4) { n /= 1024; i++; } return `${n.toFixed(i ? 1 : 0)} ${u[i]}`; };
+const dur = (s) => { s = Number(s || 0); const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60); return d ? `${d} d ${h} h` : h ? `${h} h ${m} min` : `${m} min`; };
+routes.system = async () => {
+  const s = await api("/system");
+  const up = s.services.filter((x) => x.ok).length;
+  view().innerHTML = head("System health", `${up} of ${s.services.length} services healthy · dashboard up ${dur(s.runtime.uptime_s)}`, '<button id="rf">Refresh</button>') + `
+    <div class="card flush">${table(s.services, [{ key: "name", label: "Service", render: (v, r) => `<b>${esc(v)}</b><div class="dim" style="font-size:12px;white-space:normal">${esc(r.role)}</div>` },
+      { key: "ok", label: "Status", render: (v, r) => v ? '<span class="st ok"><span class="dot"></span>Healthy</span>' : `<span class="st bad"><span class="dot bad"></span>Down</span><div class="dim" style="font-size:12px;white-space:normal;max-width:360px">${esc(r.error || "HTTP " + r.status)}</div>` },
+      { key: "ms", label: "Answer", right: true, render: (v) => v != null ? `${esc(v)} ms` : "" },
+      { key: "detail", label: "Details", wrap: true, render: (v, r) => r.name === "rb-db" && v ? esc(`${String(v.version).split(" ").slice(0, 2).join(" ")} · ${bytes(v.size)} · ${v.connections} connections · up ${dur(v.uptime_s)}`)
+        : r.name === "rb-iot" && v ? esc(`${v.clients} MQTT clients`) : r.name === "rb-remoting" && v ? esc(`${v.kiosks ?? 0} kiosks on the broker`)
+        : r.name === "rb-admin" && v ? esc(`up ${dur(v.uptime_s)}`) : r.url ? `<span class="dim">${esc(r.url)}</span>` : "" }], { pad: true })}</div>
+    <div class="grid2 mt">
+      <div class="card"><div class="card-h"><h2>Certificates</h2><a class="more" href="/api/provisioning/ca.crt">Download the CA →</a></div>
+        ${s.certificates.map((c) => `<div class="kv" style="margin-bottom:14px"><div>${esc(c.file)}</div><div><b>${esc(c.subject)}</b></div>
+          <div>Expires</div><div>${c.days_left < 60 ? `<span class="st ${c.days_left < 14 ? "bad" : "warn"}"><span class="dot ${c.days_left < 14 ? "bad" : "warn"}"></span>` : ""}${esc(fmtDate(c.not_after))} (${esc(c.days_left)} days)${c.days_left < 60 ? "</span>" : ""}</div>
+          ${c.names.length ? `<div>Names</div><div class="muted" style="white-space:normal">${esc(c.names.join(", "))}</div>` : ""}</div>`).join("") || '<p class="muted">No certificates found.</p>'}</div>
+      <div class="card"><div class="card-h"><h2>Settings</h2><span class="dim" style="font-size:12px">from .env, read-only</span></div>
+        <div class="kv">${Object.entries(s.settings).map(([k, v]) => `<div>${esc(k)}</div><div>${typeof v === "boolean" ? (v ? "yes" : "no") : esc(v)}</div>`).join("")}</div></div>
+    </div>
+    <div class="grid2 mt">
+      <div class="card flush"><div class="card-h"><h2>Largest tables</h2></div>${table(s.tables, [{ key: "table" }, { key: "rows", right: true, render: num }, { key: "bytes", label: "Size", right: true, render: bytes }], { pad: true })}</div>
+      <div class="card"><div class="card-h"><h2>Storage</h2></div>${s.disk ? `<div class="row" style="font-weight:600"><span>${esc(s.disk.path)}</span><span class="grow"></span><span class="muted">${bytes(s.disk.used)} of ${bytes(s.disk.total)} used</span></div>
+        <div class="bar" style="margin-top:8px"><i style="width:${(s.disk.used / s.disk.total) * 100}%"></i></div><p class="muted">${bytes(s.disk.free)} free</p>` : '<p class="muted">Unknown.</p>'}
+        <div class="kv mt"><div>Python</div><div>${esc(s.runtime.python)}</div><div>Platform</div><div class="muted" style="white-space:normal">${esc(s.runtime.platform)}</div></div></div>
+    </div>`;
+  $("#rf").onclick = () => { route(); health(); };
+};
+
+// --------------------------------------------------------------------------------- users & access
+const ACCESS_TABS = [["users", "Dashboard users"], ["tokens", "CI tokens"], ["staff", "Field-staff logins"], ["kiosks", "Kiosk authentication"]];
+routes.access = async (tab = "users") => {
+  view().innerHTML = head("Users & access", "Who can sign in to the dashboard, the kiosks and the APIs") +
+    `<div class="tabs">${ACCESS_TABS.map(([t, l]) => `<a href="#/access/${t}" class="${t === tab ? "on" : ""}">${l}</a>`).join("")}</div><div id="av"></div>`;
+  const root = $("#av");
+  if (tab === "users") {
+    const d = await api("/users");
+    const roleText = { admin: "Everything, including accounts and CI tokens", operator: "Every change except accounts and CI tokens", viewer: "Read only" };
+    root.innerHTML = `<div class="card flush">${table([{ username: d.bootstrap.username, role: "admin", enabled: d.bootstrap.configured, last_login_at: d.bootstrap.last_login_at, bootstrap: true }, ...d.users], [
+        { key: "username", label: "User", render: (v, r) => `<b>${esc(v)}</b>${r.display_name ? ` <span class="muted">${esc(r.display_name)}</span>` : ""}${r.bootstrap ? ' <span class="label">from .env</span>' : ""}` },
+        { key: "role", render: (v) => `<span style="text-transform:capitalize">${esc(v)}</span>` },
+        { key: "enabled", label: "Status", render: (v) => v ? '<span class="st ok"><span class="dot"></span>Active</span>' : '<span class="st mute"><span class="dot off"></span>Disabled</span>' },
+        { key: "last_login_at", label: "Last login", render: (v) => `<span class="muted">${esc(ago(v))}</span>` },
+        { key: "_", label: "", right: true, render: (v, r) => r.bootstrap || !can("admin") ? "" : `<button class="sm" data-edit="${esc(r.username)}">Edit</button>` }], { pad: true })}</div>
+      ${can("admin") ? '<div class="toolbar mt"><button class="primary" id="nu">Add a user</button></div>' : ""}
+      <div class="card mt"><div class="card-h"><h2>Roles</h2></div><div class="kv">${Object.entries(roleText).map(([r, t]) => `<div style="text-transform:capitalize">${r}</div><div>${t}</div>`).join("")}</div>
+        <p class="muted" style="margin-bottom:0">The account from <code>.env</code> (ADMIN_USERNAME / ADMIN_PASSWORD_HASH) is always an admin; change its password with
+        <code>scripts/set-admin-password.sh</code>. ${ME.bootstrap ? "" : '<a id="mypw" href="#/access/users">Change your password</a>'}</p></div>`;
+    const userDialog = (u) => {
+      const m = modal(`<h3>${u ? "Edit " + esc(u.username) : "Add a dashboard user"}</h3><form id="uf">
+        ${u ? "" : '<label>User name <input name="username" required autocomplete="off"></label>'}
+        <label>Display name <input name="display_name" value="${esc(u ? u.display_name || "" : "")}"></label>
+        <label>Role <select name="role">${d.roles.map((r) => `<option ${u && u.role === r ? "selected" : ""}>${r}</option>`).join("")}</select></label>
+        <label>${u ? "New password (leave empty to keep)" : "Password"} <input name="password" type="password" autocomplete="new-password" ${u ? "" : "required"} minlength="10"></label>
+        ${u ? `<label><input type="checkbox" name="enabled" ${u.enabled ? "checked" : ""}> account enabled</label>` : ""}
+        <div class="toolbar mt"><button class="primary">${u ? "Save" : "Add user"}</button><button type="button" id="cl">Cancel</button><span class="grow"></span>
+          ${u ? '<button type="button" class="danger" id="del">Delete</button>' : ""}</div></form>`);
+      $("#cl", m).onclick = closeModal;
+      $("#uf", m).addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const f = Object.fromEntries(new FormData(e.target));
+        if (u) { f.enabled = !!f.enabled; if (!f.password) delete f.password; await act(() => api("/users/" + encodeURIComponent(u.username), { method: "PUT", body: f }), "Saved"); }
+        else await act(() => api("/users", { body: f }), "User added");
+        closeModal(); route();
+      });
+      if (u) $("#del", m).onclick = async () => {
+        if (!confirm(`Delete ${u.username}?`)) return;
+        await act(() => api("/users/" + encodeURIComponent(u.username), { method: "DELETE" }), "Deleted"); closeModal(); route();
+      };
+    };
+    if ($("#nu")) $("#nu").onclick = () => userDialog(null);
+    $$("button[data-edit]").forEach((b) => (b.onclick = () => userDialog(d.users.find((u) => u.username === b.dataset.edit))));
+    if ($("#mypw")) $("#mypw").onclick = (e) => {
+      e.preventDefault();
+      const m = modal(`<h3>Change your password</h3><form id="pf"><label>Current password <input name="current" type="password" required></label>
+        <label>New password <input name="password" type="password" minlength="10" required></label>
+        <div class="toolbar mt"><button class="primary">Change</button><button type="button" id="cl">Cancel</button></div></form>`);
+      $("#cl", m).onclick = closeModal;
+      $("#pf", m).addEventListener("submit", async (ev) => { ev.preventDefault(); await act(() => api("/me/password", { body: Object.fromEntries(new FormData(ev.target)) }), "Password changed"); closeModal(); });
+    };
+  } else if (tab === "tokens") {
+    const tokens = await api("/releases/tokens");
+    root.innerHTML = `<p class="muted">Bearer tokens for <code>/api/ci/*</code> (<code>scripts/rb-release.py</code>, the Software repository's release workflow).
+        <b>publish</b> uploads releases, <b>deploy</b> rolls out and back; every token can read status. A token is shown once.</p>
+      ${can("admin") ? `<form id="tk" class="card inline"><label>Name <input name="name" required placeholder="ci-publish"></label>
+        <label class="inline"><input type="checkbox" name="scopes" value="publish" checked> publish</label>
+        <label class="inline"><input type="checkbox" name="scopes" value="deploy"> deploy</label><button class="primary">Create token</button></form>` : ""}
+      <div class="card flush mt">${table(tokens, [{ key: "name", render: (v) => `<b>${esc(v)}</b>` }, { key: "scopes", render: (v) => esc((v || []).join(", ")) },
+        { key: "created_at", label: "Created" }, { key: "last_used_at", label: "Last used", render: (v) => esc(ago(v)) },
+        { key: "revoked_at", label: "", right: true, render: (v, r) => v ? '<span class="st mute">Revoked</span>' : can("admin") ? `<button class="sm danger" data-revoke="${esc(r.name)}">Revoke</button>` : "" }],
+        { pad: true, empty: "No tokens." })}</div>`;
+    if ($("#tk")) $("#tk").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const x = await act(() => api("/releases/tokens", { body: { name: fd.get("name"), scopes: fd.getAll("scopes") } }));
+      const m = modal(`<h3>Token ${esc(x.name)}</h3><p>Copy it now; it is not shown again. Store it as the CI secret <code>RB_API_TOKEN</code>.</p><pre>${esc(x.token)}</pre>
+        <div class="toolbar mt"><button id="cp">Copy</button><span class="grow"></span><button id="cl" class="primary">Done</button></div>`);
+      $("#cp", m).onclick = () => navigator.clipboard.writeText(x.token).then(() => toast("Copied"));
+      $("#cl", m).onclick = () => { closeModal(); route(); };
+    });
+    $$("button[data-revoke]").forEach((b) => (b.onclick = async () => {
+      if (!confirm(`Revoke token ${b.dataset.revoke}? CI using it stops working.`)) return;
+      await act(() => api("/releases/tokens/revoke", { body: { name: b.dataset.revoke } }), "Revoked"); route();
+    }));
+  } else if (tab === "staff") {
+    const a = await api("/access");
+    root.innerHTML = `<p class="muted">Logins for the kiosk's staff screens (<code>POST api/kiosk/authenticate</code>). While the list is empty, any non-empty
+        user name and password is accepted.</p>
+      ${can() ? `<form id="sf" class="card inline"><label>User name <input name="username" required></label><label>Password <input name="password" type="password"></label>
+        <label class="inline"><input type="checkbox" name="active" checked> active</label><button class="primary">Save</button></form>` : ""}
+      <div class="card flush mt">${table(a.staff, [{ key: "username", render: (v) => `<b>${esc(v)}</b>` },
+        { key: "active", label: "Status", render: (v) => v ? '<span class="st ok"><span class="dot"></span>Active</span>' : '<span class="st mute">Disabled</span>' },
+        { key: "_", label: "", right: true, render: (v, r) => can() ? `<button class="sm" data-tog="${esc(r.username)}" data-on="${r.active ? "" : "1"}">${r.active ? "Disable" : "Enable"}</button> <button class="sm danger" data-del="${esc(r.username)}">Delete</button>` : "" }],
+        { pad: true, empty: "No staff logins: every user name and password is accepted." })}</div>`;
+    if ($("#sf")) $("#sf").addEventListener("submit", async (e) => {
+      e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); f.active = !!f.active;
+      await act(() => api("/staff", { body: f }), "Saved"); route();
+    });
+    $$("button[data-tog]").forEach((b) => (b.onclick = async () => { await act(() => api("/staff", { body: { username: b.dataset.tog, active: !!b.dataset.on } }), "Saved"); route(); }));
+    $$("button[data-del]").forEach((b) => (b.onclick = async () => { if (!confirm(`Delete ${b.dataset.del}?`)) return; await act(() => api("/staff/delete", { body: { username: b.dataset.del } }), "Deleted"); route(); }));
+  } else {
+    const a = await api("/access");
+    root.innerHTML = `<div class="card"><div class="kv">
+        <div>Cloud API keys</div><div>${a.cloud_api.enforced ? '<span class="st ok"><span class="dot"></span>Enforced</span>' : '<span class="st warn"><span class="dot warn"></span>Not enforced</span>'}
+          · ${a.cloud_api.keys.length} configured ${a.cloud_api.keys.length ? `<code>${esc(a.cloud_api.keys.join(", "))}</code>` : ""}</div>
+        <div>MQTT client certificates</div><div>${a.mqtt_client_cert ? "Required" : '<span class="st warn"><span class="dot warn"></span>Not required</span>'} · ${num(a.iot_certs.active)} active, ${num(a.iot_certs.revoked)} revoked
+          (<a class="link" href="#/provisioning">manage</a>)</div>
+        <div>Update Service credentials</div><div>${a.update_service_check ? "Checked (UPDATE_SERVICE_KEY1/2)" : '<span class="st warn"><span class="dot warn"></span>Every store accepted</span>'}</div></div>
+      <p class="muted" style="margin-bottom:0">These come from <code>.env</code>; change them there and restart the services.</p></div>`;
+  }
+};
+
+// ----------------------------------------------------------------------------------- provisioning
+routes.provisioning = async (tab = "kiosks") => {
+  const d = await api("/provisioning");
+  const tabs = [["kiosks", "New kiosks"], ["certificates", "IoT certificates"], ["installer", "Installer sessions"]];
+  view().innerHTML = head("Provisioning", "Setting up new kiosks and pointing existing ones at this backend",
+    `<a class="button" href="/api/provisioning/ca.crt">Backend CA</a>${can() ? '<button class="primary" id="rp">Reprovision file...</button>' : ""}`) +
+    `<div class="tabs">${tabs.map(([t, l]) => `<a href="#/provisioning/${t}" class="${t === tab ? "on" : ""}">${l}</a>`).join("")}</div><div id="pv"></div>`;
+  if ($("#rp")) $("#rp").onclick = () => reprovisionDialog("");
+  const root = $("#pv");
+  if (tab === "kiosks") {
+    root.innerHTML = `<div class="grid2"><form id="isf" class="card"><div class="card-h"><h2>Installer settings</h2></div>
+        <p class="muted">The <code>settings.json</code> for <code>provisioning/installer/Install-Kiosk.ps1</code>. Put it in the installer payload with the kiosk's
+        reprovision file (<code>kiosk-&lt;id&gt;.json</code>) and a data zip.</p>
+        <label>Store ID <input name="id" required type="number"></label>
+        <label>Kiosk type <select name="kiosk_type"><option>R630</option><option>R620</option><option>R610</option></select></label>
+        <label>Data zip file name <input name="data_zip" value="data.zip"></label>
+        <label class="inline"><input type="checkbox" name="test_mode"> test mode (VM or Windows Sandbox, no reboot)</label>
+        <div class="toolbar mt"><button class="primary">Download settings.json</button><button type="button" id="rp2">Reprovision file...</button></div></form>
+      <div class="card"><div class="card-h"><h2>Backend address</h2></div><div class="kv">
+        <div>Public IP</div><div>${esc(d.backend_ip)}</div>
+        <div>Hosts entries</div><div>${d.host_entries.length ? d.host_entries.map(esc).join("<br>") : '<span class="muted">from the public IP</span>'}</div></div>
+        <p class="muted">Kiosks reach the services by these names: ${Object.keys(d.service_hosts || {}).length ? Object.values(d.service_hosts).map((h) => `<code>${esc(h)}</code>`).join(", ") : "see docs/deploy-linux.md"}.</p></div></div>
+      <div class="card flush mt"><div class="card-h"><h2>Stores waiting for the kiosk installer</h2><a class="more" href="#/data/installer_kiosks">Edit →</a></div>
+        ${table(d.installer_kiosks, [{ key: "id", label: "Store", render: (v) => `<b>${esc(v)}</b>` }, { key: "banner_name", label: "Banner" }, { key: "market_name", label: "Market" },
+          { key: "address", label: "Address", render: (v, r) => esc([v, r.city, r.state_name, r.zip].filter(Boolean).join(", ")) },
+          { key: "pending", label: "", right: true, render: (v) => v ? '<span class="st warn"><span class="dot warn"></span>Pending</span>' : '<span class="st mute">Installed</span>' }], { pad: true, empty: "None. Add stores here to offer them in the Redbox kiosk installer's store list." })}</div>`;
+    $("#rp2").onclick = () => reprovisionDialog("");
+    $("#isf").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const f = new FormData(e.target);
+      location.href = `/api/provisioning/installer/${encodeURIComponent(f.get("id"))}.json?` + new URLSearchParams({ kiosk_type: f.get("kiosk_type"), data_zip: f.get("data_zip"), test_mode: f.get("test_mode") ? "true" : "false" });
+    });
+  } else if (tab === "certificates") {
+    root.innerHTML = `<p class="muted">Client certificates the Update Client gets from the IoT certificate service for its MQTT connection. Revoking one makes rb-iot refuse it;
+        the kiosk asks for a new one when it reconnects.</p>
+      <div class="card flush">${table(d.certificates, [{ key: "kiosk_id", label: "Kiosk", render: (v) => `<a class="link" href="#/kiosk/${esc(v)}">${esc(v)}</a>` },
+        { key: "certificate_id", label: "Certificate", render: (v) => `<code title="${esc(v)}">${short(v)}</code>` }, { key: "market" }, { key: "created_at", label: "Issued" },
+        { key: "revoked_at", label: "", right: true, render: (v, r) => v ? `<span class="st mute">Revoked ${esc(ago(v))}</span>` : can() ? `<button class="sm danger" data-rev="${esc(r.certificate_id)}">Revoke</button>` : '<span class="st ok">Active</span>' }],
+        { pad: true, empty: "No certificates issued yet." })}</div>
+      <div class="card flush mt"><div class="card-h"><h2>Update Client registrations</h2></div>${table(d.registrations, [{ key: "kiosk_id", label: "Kiosk" }, { key: "ucs_version", label: "Version" },
+        { key: "broker_registered", label: "Broker", render: (v, r) => v ? "registered" : esc(r.broker_reason || "no") }, { key: "registered_at", label: "Registered" },
+        { key: "last_ping_at", label: "Last ping", render: (v) => esc(ago(v)) }], { pad: true, empty: "None." })}</div>`;
+    $$("button[data-rev]").forEach((b) => (b.onclick = async () => {
+      if (!confirm("Revoke this certificate?")) return;
+      await act(() => api("/provisioning/certificates/revoke", { body: { certificate_id: b.dataset.rev } }), "Revoked"); route();
+    }));
+  } else {
+    root.innerHTML = `<p class="muted">Sessions of the original Redbox store installer against the Update Service (it downloads the store's data zip and reports progress).</p>
+      <div class="card flush">${table(d.installer_sessions, [{ key: "created_at", label: "Started" }, { key: "version" }, { key: "guid", render: (v) => `<code>${short(v)}</code>` },
+        { key: "log_lines", label: "Log", right: true }], { onclick: true, pad: true, empty: "No installer has connected yet." })}</div>`;
+    bindRows(root, d.installer_sessions, (r) => { const m = modal(`<h3>Installer session ${esc(short(r.guid))}</h3><pre>${esc(JSON.stringify(r.log, null, 2))}</pre><div class="toolbar mt"><button id="cl">Close</button></div>`); $("#cl", m).onclick = closeModal; });
+  }
+};
+
+// -------------------------------------------------------------------------------------- audit log
+routes.audit = async () => {
+  view().innerHTML = head("Audit log", "Every change made in the dashboard, and sign-ins") + `
+    <div class="toolbar"><div class="search grow">${ic("search")}<input id="aq" placeholder="User, page or path"></div>
+      <select id="ak"><option value="audit">changes</option><option value="dashboard">sign-ins and dashboard events</option></select></div><div class="card flush" id="at"></div>`;
+  const load = async () => {
+    const p = new URLSearchParams({ source: $("#ak").value, limit: "300" });
+    if ($("#aq").value) p.set("q", $("#aq").value);
+    const rows = await api("/events?" + p);
+    $("#at").innerHTML = table(rows, [{ key: "created_at", label: "When", render: (v) => `<span class="dim">${esc(fmtDate(v))}</span>` },
+      { key: "payload", label: "Who", render: (v) => `<b>${esc((v && (v.user || v.username || v.by)) || "-")}</b>${v && v.role ? ` <span class="dim">${esc(v.role)}</span>` : ""}` },
+      { key: "kind", label: "What", wrap: true, render: (v, r) => `<code>${esc(v)}</code>` },
+      { key: "payload", label: "Result", right: true, render: (v, r) => r.source === "audit" ? (v.status < 400 ? `<span class="st mute">${esc(v.status)}</span>` : `<span class="st bad">${esc(v.status)}</span>`)
+        : r.kind === "login-failed" ? '<span class="st bad"><span class="dot bad"></span>failed</span>' : "" }], { pad: true, empty: "Nothing recorded yet." });
+  };
+  $("#aq").addEventListener("keydown", (e) => e.key === "Enter" && load()); $("#ak").onchange = load;
+  await load();
+};
+
+// ---------------------------------------------------------------------------------- event tickets
+routes.tickets = async (tab = "ticket_events") => {
+  const tabs = [["ticket_events", "Events"], ["ticket_productions", "Productions"], ["ticket_groups", "Ticket groups"], ["ticket_group_prices", "Group prices"],
+    ["ticket_price_codes", "Price codes"], ["ticket_orders", "Orders"], ["ticket_locks", "Seat locks"], ["ticket_delivery_methods", "Delivery"], ["ticket_notifications", "Notifications"]];
+  view().innerHTML = head("Event tickets", "The kiosk's ticket sales: events, productions, seats and orders") +
+    `<div class="tabs">${tabs.map(([t, l]) => `<a href="#/tickets/${t}" class="${t === tab ? "on" : ""}">${l}</a>`).join("")}</div><div id="tv"></div>`;
+  await editorView(tab, $("#tv"));
 };
 
 // ------------------------------------------------------------------------------------------ boot

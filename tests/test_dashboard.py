@@ -49,7 +49,7 @@ def test_login_required_and_wrong_password(client):
 def test_login_session_and_csrf(client):
     r = client.post("/api/login", json={"username": "admin", "password": PASSWORD})
     assert r.status_code == 200 and "rb_admin" in r.cookies
-    assert client.get("/api/me").json() == {"user": "admin"}
+    assert client.get("/api/me").json() == {"user": "admin", "role": "admin", "bootstrap": True}
     assert client.post("/api/kconfig/push", json={}).status_code == 403  # no X-Requested-With
     client.cookies.clear()
     client.cookies.set("rb_admin", "forged.deadbeef")
@@ -165,3 +165,76 @@ def test_catalog_import_refuses_a_seed_zip(client):
     login(client)
     r = client.post("/api/catalog/import", headers=H, json={"folder": "/packages/data-05072024.zip"})
     assert r.status_code == 400 and "leave this field empty" in r.json()["detail"]
+
+
+def _login_as(client, user, password):
+    client.cookies.clear()
+    r = client.post("/api/login", json={"username": user, "password": password})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_accounts_roles_and_audit(client):
+    login(client)
+    viewer, operator = "v-" + uuid.uuid4().hex[:6], "o-" + uuid.uuid4().hex[:6]
+    pw = "pw-" + uuid.uuid4().hex
+    assert client.post("/api/users", headers=H, json={"username": viewer, "password": "short", "role": "viewer"}).status_code == 400
+    for name, role in ((viewer, "viewer"), (operator, "operator")):
+        assert client.post("/api/users", headers=H, json={"username": name, "password": pw, "role": role}).status_code == 200
+    try:
+        assert _login_as(client, viewer, pw)["role"] == "viewer"
+        assert client.get("/api/kiosks").status_code == 200                       # reads work
+        assert client.post("/api/kconfig/push", headers=H, json={}).status_code == 403  # changes do not
+        assert _login_as(client, operator, pw)["role"] == "operator"
+        assert client.post("/api/users", headers=H, json={"username": "x" + viewer, "password": pw, "role": "admin"}).status_code == 403
+        assert client.post("/api/releases/tokens", headers=H, json={"name": "t", "scopes": ["publish"]}).status_code == 403
+        assert client.post("/api/staff", headers=H, json={"username": operator, "password": pw}).status_code == 200
+        assert client.post("/api/staff/delete", headers=H, json={"username": operator}).status_code == 200
+        # disabling the account ends its session at once
+        login(client)
+        assert client.put(f"/api/users/{operator}", headers=H, json={"enabled": False}).status_code == 200
+        client.cookies.clear()
+        r = client.post("/api/login", json={"username": operator, "password": pw})
+        assert r.status_code == 401
+        login(client)
+        audit = client.get("/api/events?source=audit&q=" + operator).json()
+        assert any(e["kind"] == f"PUT /api/users/{operator}" and e["payload"]["user"] == "admin" for e in audit)
+    finally:
+        login(client)
+        for name in (viewer, operator):
+            client.delete(f"/api/users/{name}", headers=H)
+
+
+def test_control_center_pages(client):
+    login(client)
+    f = client.get("/api/fleet").json()
+    assert {"online", "recent", "stale", "offline", "total"} <= set(f["status"]) and len(f["hourly"]) == 24
+    assert "amount" not in str(f) and "revenue" not in str(f)       # the kiosks take no real payments
+    s = client.get("/api/system").json()
+    assert s["services"][0]["name"] == "rb-db" and s["services"][0]["ok"]
+    assert {"Payment mode", "Log level"} <= set(s["settings"])
+    assert "total" in client.get("/api/rentals?kind=rentals").json()
+    assert "total" in client.get("/api/rentals?kind=returns").json()
+    b = client.get("/api/catalog/browse?family=2").json()
+    assert {"total", "rows", "counts", "by_type"} <= set(b)
+    p = client.get("/api/provisioning").json()
+    assert "installer_kiosks" in p and "certificates" in p
+    r = client.get("/api/provisioning/installer/990123.json?kiosk_type=R630&test_mode=true")
+    assert r.status_code == 200 and r.json()["StoreId"] == 990123 and r.json()["TestMode"] is True
+    assert client.get("/api/provisioning/ca.crt").text.startswith("-----BEGIN")
+    assert "staff" in client.get("/api/access").json()
+
+
+def test_kiosk_edit_and_activity(client):
+    login(client)
+    kiosk = 777001
+    from redbox_backend import db  # noqa: F401
+    if client.get(f"/api/kiosks/{kiosk}").status_code == 404:
+        client.post("/api/tables/kiosks", headers=H, json={"kiosk_id": kiosk})
+    r = client.put(f"/api/kiosks/{kiosk}", headers=H, json={"kiosk": {"banner": "Test banner"},
+                                                             "location": {"label": "Dash test", "latitude": "32.8"}})
+    assert r.status_code == 200, r.text
+    d = client.get(f"/api/kiosks/{kiosk}").json()
+    assert d["kiosk"]["banner"] == "Test banner" and d["location"]["label"] == "Dash test"
+    a = client.get(f"/api/kiosks/{kiosk}/activity").json()
+    assert {"requests", "reservations", "inventory", "certificates", "uploads", "daily"} <= set(a)
