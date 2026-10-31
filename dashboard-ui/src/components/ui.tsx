@@ -3,8 +3,10 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Anchor, Badge, Box, Card, Group, Paper, SimpleGrid, Skeleton, Stack, Tabs, Text, TextInput, Title, type MantineColor } from "@mantine/core";
 import { useDebouncedValue } from "@mantine/hooks";
 import { IconSearch, IconX } from "@tabler/icons-react";
+import { PageStats } from "./PageStats";
 
-export function PageHeader({ title, description, actions, crumbs }: { title: ReactNode; description?: ReactNode; actions?: ReactNode; crumbs?: { label: string; to: string }[] }) {
+/** The page title row; `stats` adds that area's stat cards (components/PageStats.tsx) under it. */
+export function PageHeader({ title, description, actions, crumbs, stats }: { title: ReactNode; description?: ReactNode; actions?: ReactNode; crumbs?: { label: string; to: string }[]; stats?: string }) {
   useEffect(() => { if (typeof title === "string") document.title = `${title} - Redbox Control Center`; }, [title]);
   return (
     <Box mb="lg">
@@ -20,6 +22,7 @@ export function PageHeader({ title, description, actions, crumbs }: { title: Rea
         </div>
         {actions && <Group gap="sm">{actions}</Group>}
       </Group>
+      {stats && <Box mt="lg"><PageStats area={stats} /></Box>}
     </Box>
   );
 }

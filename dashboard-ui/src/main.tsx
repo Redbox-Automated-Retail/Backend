@@ -26,7 +26,11 @@ const queryClient = new QueryClient({
     },
   },
   // failed changes always say so; failed loads show their own error state on the page
-  mutationCache: new MutationCache({ onError: (e, _v, _c, m) => { if (!m.options.onError) notifyError(e); } }),
+  mutationCache: new MutationCache({
+    onError: (e, _v, _c, m) => { if (!m.options.onError) notifyError(e); },
+    // any change can move a page's stat cards
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["stats"] }); },
+  }),
   queryCache: new QueryCache(),
 });
 

@@ -26,7 +26,7 @@ export function TableTabsPage({ area }: { area: keyof typeof AREAS | string }) {
   const { tab = a.tabs[0][0] } = useParams();
   return (
     <>
-      <PageHeader title={a.title} description={a.description} />
+      <PageHeader title={a.title} description={a.description} stats={area} />
       {a.note && <Text size="sm" mt={-8} mb="md">{a.note}</Text>}
       {a.tabs.length > 1 && <RouteTabs base={a.base} value={tab} tabs={a.tabs.map(([value, label]) => ({ value, label }))} />}
       <TableEditor key={tab} name={tab} />

@@ -732,3 +732,114 @@ async def admin_stores_import(body: dict):
                      lambda p: st.import_tables(revision=revision, progress=p))
     await db.record_event(None, "dashboard", "stores-import", {"job": job, "revision": revision, "by": _who()})
     return srv.ok({"job": job})
+
+
+# --------------------------------------------------------------------------------------------- stats
+# The stat cards at the top of each page: a few counts per area in one query each (no money anywhere).
+
+STATS = {
+    "catalog": (
+        "SELECT (SELECT count(*) FROM catalog_rows WHERE tbl = 'ProductCatalog') AS titles,"
+        " (SELECT count(*) FROM catalog_rows r WHERE r.tbl = 'ProductCatalog' AND r.t_type IN (SELECT key_num FROM catalog_rows t"
+        "   WHERE t.tbl = 'ProductType' AND t.value->>'product_family_id' = '2')) AS games,"
+        " (SELECT count(*) FROM catalog_images) AS images,"
+        " (SELECT count(*) FROM catalog_rows WHERE tbl = 'ProductCatalog' AND coalesce(t_image, '') = '') AS no_art,"
+        " (SELECT count(*) FROM catalog_rows WHERE tbl = 'ProductCatalog' AND t_release > to_char(now(), 'YYYYMMDDHH24MISS')) AS coming_soon,"
+        " (SELECT count(*) FROM catalog_rows WHERE edited_at IS NOT NULL AND edited_at > coalesce((SELECT stamped_at FROM catalog_state"
+        "   WHERE id = 1), '-infinity'::timestamptz)) AS unpublished,"
+        " (SELECT last_build->>'at' FROM catalog_state WHERE id = 1) AS last_build,"
+        " (SELECT reltuples::bigint FROM pg_class WHERE oid = 'cloud_barcodes'::regclass) AS barcodes"),
+    "releases": (
+        "SELECT (SELECT count(*) FROM upd_repositories) AS repositories,"
+        " (SELECT count(*) FROM upd_revisions WHERE NOT released) AS unreleased,"
+        " (SELECT count(*) FROM upd_rollouts) AS rollouts,"
+        " (SELECT count(*) FROM upd_rollout_log WHERE created_at > now() - interval '7 days') AS changes_7d,"
+        " (SELECT max(created_at) FROM upd_rollout_log) AS last_change,"
+        " (SELECT count(*) FROM api_tokens WHERE revoked_at IS NULL) AS tokens"),
+    "updates": (
+        "SELECT (SELECT count(*) FROM upd_repositories) AS repositories,"
+        " (SELECT count(*) FROM upd_revisions) AS revisions,"
+        " (SELECT count(*) FROM upd_stores) AS stores,"
+        " (SELECT count(*) FROM upd_stores WHERE last_check_in > now() - interval '1 hour') AS polling,"
+        " (SELECT count(*) FROM upd_editions) AS editions"),
+    "filesets": (
+        "SELECT (SELECT count(*) FROM fs_filesets) AS filesets, (SELECT count(*) FROM fs_revisions) AS revisions,"
+        " (SELECT count(*) FROM fs_deployments) AS deployments,"
+        " (SELECT count(DISTINCT kiosk_id) FROM fs_kiosk_state) AS kiosks,"
+        " (SELECT count(*) FROM fs_kiosk_state WHERE state IN (2, 3)) AS problems,"
+        " (SELECT count(*) FROM fs_kiosk_state WHERE state = 1) AS in_progress"),
+    "config": (
+        "SELECT (SELECT count(*) FROM cfg_values) AS config_values, (SELECT max(version) FROM cfg_version) AS version,"
+        " (SELECT count(*) FROM cfg_kiosk_state) AS kiosks,"
+        " (SELECT count(*) FROM cfg_kiosk_state WHERE activated_version >= (SELECT max(version) FROM cfg_version)) AS current,"
+        " (SELECT count(*) FROM upd_config_files) AS engine_files"),
+    "rentals": (
+        "SELECT (SELECT count(*) FROM cloud_rentals WHERE rented_at >= date_trunc('day', now())) AS today,"
+        " (SELECT count(*) FROM cloud_rentals WHERE rented_at > now() - interval '7 days') AS week,"
+        " (SELECT count(*) FROM cloud_rentals WHERE status = 'out') AS out,"
+        " (SELECT count(*) FROM cloud_returns WHERE created_at > now() - interval '24 hours') AS returns_24h,"
+        " (SELECT count(*) FROM cloud_rentals) AS total"),
+    "reservations": (
+        "SELECT (SELECT count(*) FROM cloud_reservations WHERE status = 'reserved' AND (expires_at IS NULL OR expires_at > now())) AS open,"
+        " (SELECT count(*) FROM cloud_reservations WHERE status = 'picked_up') AS picked_up,"
+        " (SELECT count(*) FROM cloud_reservations WHERE status IN ('cancelled', 'expired') OR (status = 'reserved' AND expires_at < now()))"
+        "   AS ended, (SELECT count(*) FROM cloud_reservations) AS total"),
+    "customers": (
+        "SELECT (SELECT count(*) FROM cloud_customers) AS customers,"
+        " (SELECT count(*) FROM cloud_customers WHERE loyalty_enrolled) AS loyalty,"
+        " (SELECT count(*) FROM cloud_cards) AS cards,"
+        " (SELECT count(*) FROM cloud_customer_offers WHERE redeemed_at IS NULL AND (expires_at IS NULL OR expires_at > now())) AS offers"),
+    "pricing": (
+        "SELECT (SELECT count(*) FROM cloud_promo_codes WHERE active) AS promo_codes,"
+        " (SELECT count(*) FROM cloud_promo_redemptions) AS redemptions,"
+        " (SELECT count(*) FROM cloud_campaigns) AS campaigns,"
+        " (SELECT count(*) FROM cloud_customer_offers WHERE redeemed_at IS NULL) AS offers"),
+    "tickets": (
+        "SELECT (SELECT count(*) FROM ticket_events) AS events, (SELECT count(*) FROM ticket_productions) AS productions,"
+        " (SELECT count(*) FROM ticket_orders) AS orders, (SELECT count(*) FROM ticket_locks) AS locks"),
+    "inventory": (
+        "SELECT (SELECT count(*) FROM cloud_inventory) AS discs,"
+        " (SELECT count(DISTINCT kiosk_id) FROM cloud_inventory) AS kiosks,"
+        " (SELECT count(*) FROM cloud_rentals WHERE status = 'out') AS out,"
+        " (SELECT max(created_at) FROM cloud_inventory_syncs) AS last_sync"),
+    "provisioning": (
+        "SELECT (SELECT count(*) FROM cloud_installer_kiosks WHERE pending) AS offered,"
+        " (SELECT count(*) FROM iot_certs WHERE revoked_at IS NULL) AS certificates,"
+        " (SELECT count(*) FROM iot_certs WHERE revoked_at IS NOT NULL) AS revoked,"
+        " (SELECT count(*) FROM iot_registrations) AS registrations,"
+        " (SELECT count(*) FROM upd_installer_sessions) AS installer_sessions"),
+    "access": (
+        "SELECT (SELECT count(*) FROM dash_users WHERE enabled) + 1 AS users,"
+        " (SELECT count(*) FROM dash_users WHERE enabled AND role = 'admin') + 1 AS admins,"
+        " (SELECT count(*) FROM api_tokens WHERE revoked_at IS NULL) AS tokens,"
+        " (SELECT count(*) FROM cloud_staff_users WHERE active) AS staff,"
+        " (SELECT count(*) FROM events WHERE source = 'dashboard' AND kind = 'login-failed' AND created_at > now() - interval '24 hours')"
+        "   AS failed_logins"),
+    "audit": (
+        "SELECT (SELECT count(*) FROM events WHERE source = 'audit' AND created_at > now() - interval '24 hours') AS changes_24h,"
+        " (SELECT count(DISTINCT payload->>'user') FROM events WHERE source = 'audit' AND created_at > now() - interval '7 days') AS people_7d,"
+        " (SELECT count(*) FROM events WHERE source = 'dashboard' AND kind = 'login' AND created_at > now() - interval '24 hours') AS logins_24h,"
+        " (SELECT count(*) FROM events WHERE source = 'dashboard' AND kind = 'login-failed' AND created_at > now() - interval '24 hours')"
+        "   AS failed_logins"),
+    "logs": (
+        "SELECT (SELECT count(*) FROM events WHERE created_at > now() - interval '1 hour') AS last_hour,"
+        " (SELECT count(*) FROM events WHERE created_at > now() - interval '24 hours') AS last_day,"
+        " (SELECT count(DISTINCT kiosk_id) FROM events WHERE created_at > now() - interval '24 hours') AS kiosks_24h,"
+        " (SELECT reltuples::bigint FROM pg_class WHERE oid = 'events'::regclass) AS total"),
+    "admin": (
+        "SELECT (SELECT count(*) FROM upd_import_jobs WHERE status = 'running') AS running,"
+        " (SELECT count(*) FROM upd_import_jobs WHERE status = 'failed' AND started_at > now() - interval '7 days') AS failed_7d,"
+        " (SELECT count(*) FROM upd_editions) AS editions,"
+        " (SELECT imported_at FROM catalog_state WHERE id = 1) AS catalog_imported"),
+}
+
+
+@router.get("/api/stats/{area}")
+async def area_stats(area: str):
+    sql = STATS.get(area)
+    if sql is None:
+        raise HTTPException(404, f"no stats for {area}")
+    row = await db.fetchrow(sql)
+    if area == "admin":
+        row["seeds"] = len(list(pathlib.Path(srv.PACKAGES_DIR).glob("*.zip"))) if srv.PACKAGES_DIR and os.path.isdir(srv.PACKAGES_DIR) else None
+    return srv.ok(row)

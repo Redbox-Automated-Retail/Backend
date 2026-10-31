@@ -30,7 +30,7 @@ export function CatalogPage() {
     : "The titles, box art and barcodes the kiosks show, published to them as a dvd-data revision";
   return (
     <>
-      <PageHeader title="Catalog" description={description}
+      <PageHeader stats="catalog" title="Catalog" description={description}
         actions={can && tab !== "publish" ? <Button component={Link} to="/catalog/publish" leftSection={<IconRocket size={16} />}>Build &amp; publish</Button> : undefined} />
       <RouteTabs base="/catalog" value={tab} tabs={[
         { value: "titles", label: "Titles", count: titles != null ? num(titles) : undefined },

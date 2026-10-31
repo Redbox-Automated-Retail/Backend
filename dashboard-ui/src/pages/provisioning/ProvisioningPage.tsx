@@ -178,7 +178,7 @@ export function ProvisioningPage() {
   const d = q.data;
   return (
     <>
-      <PageHeader title="Provisioning" description="Setting up new kiosks and pointing existing ones at this backend"
+      <PageHeader stats="provisioning" title="Provisioning" description="Setting up new kiosks and pointing existing ones at this backend"
         actions={<>
           <Button component="a" href="/api/provisioning/ca.crt" variant="default" leftSection={<IconCertificate size={16} />}>Backend CA</Button>
           {can() && <ReprovisionButton />}

@@ -44,7 +44,7 @@ export function AuditPage() {
 
   return (
     <>
-      <PageHeader title="Audit log" description="Every change made in the dashboard (who, what, and the answer), and sign-ins" />
+      <PageHeader stats="audit" title="Audit log" description="Every change made in the dashboard (who, what, and the answer), and sign-ins" />
       <Toolbar>
         <Stack gap={4}>
           <Text size="sm" fw={500}>Show</Text>

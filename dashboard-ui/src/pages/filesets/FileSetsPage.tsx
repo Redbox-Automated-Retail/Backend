@@ -32,7 +32,7 @@ export function FileSetsPage() {
   const [dep, setDep] = useState<FileSet | null>(null);
   return (
     <>
-      <PageHeader title="File sets"
+      <PageHeader stats="filesets" title="File sets"
         description={`File sets go to the Update Client over IoT ("ucs" channel, pushed immediately) or to updatemgrd's server poll ("legacy").`}
         actions={can() && <Button leftSection={<IconPlus size={16} />} onClick={() => setCreate(true)}>Create file set</Button>} />
       {q.isError ? <Paper bg="dark.7"><ErrorState error={q.error} onRetry={() => q.refetch()} /></Paper>

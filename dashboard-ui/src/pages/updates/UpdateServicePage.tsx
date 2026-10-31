@@ -19,7 +19,7 @@ export function UpdateServicePage() {
   const repo = q.data?.find((r) => r.name === open) || null;
   return (
     <>
-      <PageHeader title="Update service" description="updatemgrd: kiosks poll every 15 minutes (u p). A kiosk without a repository gets a full snapshot; one at an older revision gets the later revisions." />
+      <PageHeader stats="updates" title="Update service" description="updatemgrd: kiosks poll every 15 minutes (u p). A kiosk without a repository gets a full snapshot; one at an older revision gets the later revisions." />
       <Section title="Repositories" p={0}>
         <LocalTable rows={q.data} loading={q.isPending} error={q.error} onRetry={() => q.refetch()} rowKey={(r) => r.name}
           onRowClick={(r) => setOpen(r.name)} maxHeight={520} initialSort={{ sort: "name", dir: "asc" }}

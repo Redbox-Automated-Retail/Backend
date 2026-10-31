@@ -19,7 +19,7 @@ export function AdminPage() {
   const can = useCan();
   return (
     <>
-      <PageHeader title="System administration" description="Bulk imports and builds: seed data zips, the catalog, the store directory. These replace data for every kiosk, so they live here rather than on the content pages." />
+      <PageHeader stats="admin" title="System administration" description="Bulk imports and builds: seed data zips, the catalog, the store directory. These replace data for every kiosk, so they live here rather than on the content pages." />
       {!can() && <Alert color="yellow" icon={<IconLock size={18} />} mb="md">Your account is read-only: you can watch jobs but not start them.</Alert>}
       <RouteTabs base="/admin" value={tab} tabs={[
         { value: "data-zips", label: "Data zips" }, { value: "catalog", label: "Catalog import" },

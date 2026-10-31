@@ -341,7 +341,7 @@ export function AccessPage() {
   const { tab = "users" } = useParams();
   return (
     <>
-      <PageHeader title="Users & access" description="Who can sign in to the dashboard, the kiosks and the APIs" />
+      <PageHeader stats="access" title="Users & access" description="Who can sign in to the dashboard, the kiosks and the APIs" />
       <RouteTabs base="/access" value={tab} tabs={[
         { value: "users", label: "Dashboard users" }, { value: "tokens", label: "CI tokens" },
         { value: "staff", label: "Field-staff logins" }, { value: "kiosks", label: "Kiosk authentication" },

@@ -57,7 +57,7 @@ export function LogsPage() {
 
   return (
     <>
-      <PageHeader title="Logs & events" description="Everything the services record: kiosk calls, IoT traffic, broker calls, dashboard sign-ins and changes"
+      <PageHeader stats="logs" title="Logs & events" description="Everything the services record: kiosk calls, IoT traffic, broker calls, dashboard sign-ins and changes"
         actions={<>
           <Switch label="Live (every 5 s)" checked={live} onChange={(e) => setLive(e.currentTarget.checked)} fw={600} />
           <Button variant="default" leftSection={<IconRefresh size={16} />} onClick={() => { qc.invalidateQueries({ queryKey: [KEY] }); kinds.refetch(); }}>Refresh</Button>

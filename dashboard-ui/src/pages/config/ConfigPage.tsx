@@ -7,7 +7,7 @@ export function ConfigPage() {
   const tab = useParams().tab === "engine" ? "engine" : "kiosk";
   return (
     <>
-      <PageHeader title="Configuration" description="Kiosk configuration values (Update Client) and the engine config files updatemgrd delivers." />
+      <PageHeader stats="config" title="Configuration" description="Kiosk configuration values (Update Client) and the engine config files updatemgrd delivers." />
       <RouteTabs base="/config" value={tab} tabs={[
         { value: "kiosk", label: "Kiosk configuration (Update Client)" },
         { value: "engine", label: "Engine config files (updatemgrd)" },

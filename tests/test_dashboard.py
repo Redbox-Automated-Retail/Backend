@@ -306,3 +306,13 @@ def test_frontend_routes_fall_back_to_the_app(client):
     assert r.status_code == 200 and "<div id=\"root\">" in r.text
     assert client.get("/api/no-such-route").status_code == 404
     assert client.get("/assets/no-such-file.js").status_code == 404
+
+
+def test_page_stats(client):
+    login(client)
+    from redbox_backend.dashboard import control
+    for area in control.STATS:
+        r = client.get(f"/api/stats/{area}")
+        assert r.status_code == 200, (area, r.text)
+        assert r.json() and "amount" not in r.json() and "revenue" not in r.json()
+    assert client.get("/api/stats/nope").status_code == 404

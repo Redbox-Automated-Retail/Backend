@@ -22,7 +22,7 @@ export function ReleasesPage() {
   const shown = repos.filter((r) => !filter || r.name.toLowerCase().includes(filter.toLowerCase()));
   return (
     <>
-      <PageHeader title="Releases" description="Builds are published unreleased. Nothing reaches a kiosk until you roll it out."
+      <PageHeader stats="releases" title="Releases" description="Builds are published unreleased. Nothing reaches a kiosk until you roll it out."
         actions={<>
           {can("admin") && <Button component={Link} to="/access/tokens" variant="default" leftSection={<IconKey size={16} />}>CI tokens</Button>}
           {can() && <Button leftSection={<IconUpload size={16} />} onClick={() => setPublish(true)}>Publish a release</Button>}

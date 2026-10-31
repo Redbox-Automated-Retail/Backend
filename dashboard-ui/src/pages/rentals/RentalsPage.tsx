@@ -56,7 +56,7 @@ export function RentalsPage() {
 
   return (
     <>
-      <PageHeader title="Rentals & returns" description="Discs rented, bought and returned at the kiosks" />
+      <PageHeader stats="rentals" title="Rentals & returns" description="Discs rented, bought and returned at the kiosks" />
       <RouteTabs base="/rentals" value={kind} tabs={[{ value: "rentals", label: "Rentals" }, { value: "returns", label: "Returns" }]} />
       <Toolbar>
         <UrlSearch placeholder="Barcode or title" />
