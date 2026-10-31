@@ -5,7 +5,10 @@ Redbox's (long gone) cloud. Server behaviour is inferred from the decompiled cli
 and its protocol documents in `docs/systems` (both in the `software/` submodule, see below); nothing here comes
 from Redbox server code.
 
-It runs as containers under **WSLC** (`C:\Program Files\WSL\wslc.exe`), driven by `scripts/rb.ps1`.
+It runs as Docker containers. In production that is a Linux server with Docker Compose (`compose.yaml`). See
+[Deploying with Docker Compose](#deploying-with-docker-compose-production) and
+[docs/deploy-linux.md](docs/deploy-linux.md). For development on Windows without Docker, `scripts/rb.ps1` runs
+the same containers under WSLC; see [Development with WSLC](#development-with-wslc-rbps1).
 
 ## Architecture
 
@@ -18,7 +21,7 @@ flowchart LR
     DS[DeviceService.WebApi]
     KE[Kiosk Engine / rental app]
   end
-  subgraph WSLC["WSLC network 'redbox'"]
+  subgraph Backend["Docker network 'redbox'"]
     US["rb-updatesvc<br/>srcp :7002, HTTP :7080"]
     IOT["rb-iot<br/>MQTT/TLS :8883<br/>operator API :8081 (localhost)"]
     API["rb-cloudapi<br/>HTTPS :443"]
@@ -205,7 +208,7 @@ Then run `rb-reprovision show` / `apply` / `revert` on the kiosk, elevated. See
 [kiosk/reprovision/README.md](kiosk/reprovision/README.md). The steps below are what it does, for doing them
 by hand.
 
-1. **Hosts file** (`C:\Windows\System32\drivers\etc\hosts`), with `<ip>` the PC running WSLC:
+1. **Hosts file** (`C:\Windows\System32\drivers\etc\hosts`), with `<ip>` the backend server's address:
 
    ```
    <ip> updatesvc.redbox.com
@@ -219,9 +222,11 @@ by hand.
    ```
 
    (`files.kiosk.prod.redbox.com` is invented by this backend for presigned S3 URLs.) To use your own names
-   instead, put them in `EXTRA_HOSTNAMES` (certificate) and in the settings below, then `rb.ps1 up` again.
+   instead, put them in `EXTRA_HOSTNAMES` (certificate) and in the settings below, then `docker compose up -d`
+   (or `rb.ps1 up`) again. [docs/deploy-linux.md](docs/deploy-linux.md) does this with a domain of your own.
 
-2. **Trust the CA**: `rb.ps1 export-ca`, copy `certs\ca.cer` to the kiosk and run
+2. **Trust the CA**: export it (`docker compose run --rm -v "$PWD/certs:/out" rb-certs python -m redbox_backend
+   certs --export /out`, or `rb.ps1 export-ca`), copy `certs/ca.cer` to the kiosk and run
    `certutil -addstore Root ca.cer` (elevated). Every TLS client on the kiosk validates normally:
    `srcp://` (Redbox.IPC.Framework, unless `HKLM\SOFTWARE\Redbox\ValidateCallback = false`), MQTTnet
    (`AllowUntrustedCertificates = false`, no pinning) and the .NET Core `HttpClient`s. No certificate
