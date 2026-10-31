@@ -1,3 +1,6 @@
 [submodule "software"]
 	path = software
 	url = git@github.com:Redbox-Automated-Retail/Software.git
+[submodule "vendor/vistadb3-py"]
+	path = vendor/vistadb3-py
+	url = git@github.com:Puyodead1/vistadb3-py.git

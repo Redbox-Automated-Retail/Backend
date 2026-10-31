@@ -11,6 +11,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# vistadb3 (git submodule vendor/vistadb3-py): pure-Python VistaDB 3.5 reader/writer for the kiosk catalog
+COPY vendor/vistadb3-py/src/vistadb3 ./vistadb3
 COPY redbox_backend ./redbox_backend
 COPY tests ./tests
 
