@@ -110,8 +110,9 @@ async def publish_release(zip_path, allow_new=False, actor=None):
         label = meta.get("Label") or f"{name}-{meta['Version']}"
         rev = await repo_mod.publish_revision(name, items, label=label, released=False, version=meta["Version"],
                                               build={k: v for k, v in meta.items() if k != "Files"})
+    changed = rev and await db.fetchval("SELECT count(*) FROM upd_changes WHERE repo=%s AND rev_hash=%s", name, rev)
     result = {"repository": name, "revision": rev, "label": label, "version": meta["Version"],
-              "files": len(items), "ignored": len(ignored), "added": added}
+              "files": len(items), "changed": changed or 0, "ignored": len(ignored), "added": added}
     if rev is None:
         result["note"] = "no file differs from the repository's newest revision; nothing published"
     await db.record_event(None, "releases", "publish", result | {"actor": actor, "source": meta.get("Source")})

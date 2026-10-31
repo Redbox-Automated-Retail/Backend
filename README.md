@@ -327,6 +327,13 @@ deltas). `admin check-seed` checks any seed the way updatemgrd uses it. Rebuilt 
 `data-572024.zip` comes out entry-for-entry identical to Redbox's. The format, the CLI and what was verified
 are in [docs/seed-zips.md](docs/seed-zips.md).
 
+**Our own builds.** The Software repository's `build/release.ps1` builds a component (Kiosk Client, Update
+Client, Device Service, Update Manager, Kiosk Engine, HAL, tools) into a release zip. The backend publishes it
+as an **unreleased** revision (`admin release-publish`, or `POST /api/ci/releases` with an API token from CI),
+which is then rolled out to one store, a market or everyone (`admin rollout`), watched (`admin release-status`)
+and rolled back (`admin rollback`, which publishes a revert revision when kiosks already took the release,
+since updatemgrd never moves back). See [docs/releases.md](docs/releases.md).
+
 ## Legacy .NET Remoting (`rb-remoting`)
 
 Two kiosk services were .NET Remoting, so they run on **Mono 6.12 with the real `System.Runtime.Remoting` and the
@@ -399,6 +406,11 @@ time. `tests/clients/sandbox/sandbox.ps1`:
 - **status** shows the provisioning log and the broker's view of the kiosk; **down** closes the sandbox and the
   relay. Only one sandbox can run at a time, so `up` refuses while one is still open.
 - Then send Reserve3 / Cancel to the store ID from the dashboard's Reservation broker page.
+- The sandbox runs no updatemgrd service. `tests/clients/sandbox/updatemgr-round.ps1` plays it for chosen
+  repositories with the real Update Manager code (an update-console build copied to `<Work>\control\um-bin`):
+  `run-sandbox-step.ps1 -Command "& C:\rb\clients\sandbox\updatemgr-round.ps1 -Repos kioskclient"` polls as the
+  sandbox's store, downloads, stages and activates into the sandbox's install folders. This is how a release was
+  rolled out to the sandbox and rolled back ([docs/releases.md](docs/releases.md#6-what-was-checked)).
 
 Checked twice from scratch (`down`, then `up`):
 - the sandbox provisioned itself in about 40 s without any prompt;
@@ -463,6 +475,9 @@ config files, download files) goes out on its own polls.
 .\scripts\rb.ps1 admin stores                               # stores and the heads they reported
 .\scripts\rb.ps1 admin-in D:\build\kcs publish kioskclient /in --target-path "C:\Program Files\Redbox\REDS\Kiosk Client\bin"
 .\scripts\rb.ps1 admin-in D:\build\kcs fileset-create 12 "Kiosk Client" 1.0.210.0 /in --dest "C:\Program Files\Redbox\REDS\Kiosk Client\bin"
+.\scripts\rb.ps1 admin-in E:\temp\releases release-publish /in/kioskclient-1.0.208.0.zip   # docs/releases.md
+.\scripts\rb.ps1 admin rollout kioskclient 1.0.208.0 --store 59394
+.\scripts\rb.ps1 admin release-status kioskclient
 .\scripts\rb.ps1 admin fileset-deploy 12 <revision> --kiosk 59394            # pushes TriggerReportFileSetVersions
 .\scripts\rb.ps1 admin kconfig-set KioskClientDefault PricingActive false --kiosk 59394   # pushes TriggerGetConfigChanges
 .\scripts\rb.ps1 admin iot-send 59394 Ping --version 2

@@ -799,6 +799,19 @@ docker compose exec -T rb-iot python -m redbox_backend admin stores
 
   Then open `http://localhost:8443`.
 
+- **Our own kiosk builds** ([releases.md](releases.md)). Publish a release zip from the Software repository's
+  `build/release.ps1`, roll it out to a test kiosk first, then wider:
+
+  ```sh
+  docker compose run --rm -v "$PWD/releases:/in:ro" rb-iot python -m redbox_backend admin release-publish /in/kioskclient-1.0.208.0.zip
+  docker compose exec -T rb-iot python -m redbox_backend admin rollout kioskclient 1.0.208.0 --store 12345
+  docker compose exec -T rb-iot python -m redbox_backend admin release-status kioskclient
+  docker compose exec -T rb-iot python -m redbox_backend admin rollback kioskclient --store 12345
+  ```
+
+  For CI, create a token (`admin api-token create ci --scope publish`) and let the runner reach the dashboard
+  through the SSH tunnel above or a self-hosted runner on this server; the dashboard stays on 127.0.0.1.
+
 ### 11.2 Backups
 
 Back up three things: the database, the content volume and the certificate volume. The certificates matter most:
