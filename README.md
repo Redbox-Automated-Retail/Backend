@@ -63,6 +63,7 @@ One Python 3.12 image (`Dockerfile`) holds all services; the code is in `redbox_
 |---|---|
 | `updatesvc/` | `rcp.py` line protocol server, `commands.py` (`u p`, `u pr`, `installer`, `subscription`, `repository`), `repo.py` (import, snapshots, publishing, change sets), `server.py` |
 | `filesets.py` | File-set revisions, zips and per-kiosk change sets (Update Client and updatemgrd) |
+| `catalog/` | The kiosk catalog (`profile.data`, `inventory.data`): `lua.py` (the values), `inventory.py` (the archive), `store.py` (import, build, `cloud_products`), `edit.py`, `publish.py` (dvd-data revisions); [docs/catalog.md](docs/catalog.md) |
 | `iot/` | `mqtt.py` broker, `server.py` rules/RPC/operator API, `kioskconfig.py` (configuration.json) |
 | `cloudapi/` | FastAPI app; `routers/` one module per upstream API |
 | `certs.py`, `kioskcrypto.py` | Local CA and certificates; the Update Client's password and EncryptType1 schemes |
@@ -84,7 +85,9 @@ The backend uses it for:
 - the real-client harnesses in `tests/clients/`, which load build outputs of projects under `software/src`;
 - the protocol documents in `software/docs/systems`, which the docs and code comments here cite.
 
-Paths written as `software/...` in this repository are in the submodule. Clone with it:
+Paths written as `software/...` in this repository are in the submodule. A second submodule,
+`vendor/vistadb3-py` (vistadb3, a pure-Python VistaDB 3.5 reader/writer, private for now), is copied into the
+image for the catalog. The image does not use or ship `VistaDB.NET20.dll`. Clone with both:
 
 ```powershell
 git clone --recurse-submodules git@github.com:Redbox-Automated-Retail/Backend.git
@@ -333,6 +336,32 @@ as an **unreleased** revision (`admin release-publish`, or `POST /api/ci/release
 which is then rolled out to one store, a market or everyone (`admin rollout`), watched (`admin release-status`)
 and rolled back (`admin rollback`, which publishes a revert revision when kiosks already took the release,
 since updatemgrd never moves back). See [docs/releases.md](docs/releases.md).
+
+## The kiosk catalog
+
+Kiosks rent from two files in `dvd-data`:
+- **`profile.data`**: a VistaDB 3.5 database of Lua table literals: titles, product groups, markets, stores,
+  box art;
+- **`inventory.data`**: barcode to title, about 26 million records.
+
+The backend imports them into its database (which also fills `cloud_products` and `cloud_barcodes` for the cloud
+APIs), lets you edit titles, box art, product groups, barcodes and any other table, and publishes the result
+back to kiosks as a new `dvd-data` revision. The revision goes to every kiosk, one market or one kiosk, and
+kiosks download deltas of a few MB. Use the dashboard's **Catalog** page, or:
+
+```powershell
+.\scripts\rb.ps1 admin catalog-import                          # from the dvd-data revision served to kiosks
+.\scripts\rb.ps1 admin catalog-titles "doctor strange"
+.\scripts\rb.ps1 admin catalog-title-add --type 2 --omdb "Some Movie" --year 2024 --barcode 012345678901 --group-with 300105
+.\scripts\rb.ps1 admin catalog-publish --market "Denver, CO"   # or --kiosk 12345, or nothing for every kiosk
+```
+
+- **Unedited round trip.** Without edits, the rebuilt `inventory.data` is byte-identical to the imported one, and
+  the VistaDB DLL reads the rebuilt `profile.data` identically.
+- **Edits reach the engine.** An edited catalog went through the real updatemgrd code and the real engine's
+  `ProfileData` / `Archive` classes.
+
+Storage, editing rules and what was verified: [docs/catalog.md](docs/catalog.md).
 
 ## Legacy .NET Remoting (`rb-remoting`)
 
@@ -597,6 +626,15 @@ What was run (all containers built and running under WSLC 3.0.3; `rb.ps1 test` =
   Over `srcp://` the real client completes the TLS 1.2 handshake and then rejects the certificate because this
   PC does not trust the local CA (expected; trusting it needs administrator rights), so the change-set runs
   used the plain `rcp://` debug port.
+- **Catalog**: a real kiosk catalog went through the whole pipeline, with the details in
+  [docs/catalog.md](docs/catalog.md):
+  - **Import and unedited rebuild.** It was imported (11,655 titles, 25.8 million barcodes) and rebuilt:
+    `inventory.data` byte-identical, `profile.data` dumped identically by the VistaDB DLL.
+  - **Edit and publish.** One title was added with box art and a barcode, then published as a `dvd-data` revision
+    (3.7 MB of deltas).
+  - **updatemgrd** (the harness above) staged and activated it over the seeded base.
+  - **The engine.** `tests/clients/run-catalog-engine-harness.ps1` loaded it with the engine's own `ProfileData`
+    and `Archive` classes: every row of every table, the new title, its box art and barcode.
 - **Two real incompatibilities found and fixed by these runs**: Debian's xdelta3 3.0.11 writes LZMA secondary
   compression that the kiosk's xdelta3 3.0u rejects (now `-S none`); and the harness showed the kiosk's
   xdelta3 fails on paths over 260 characters (only a problem for very deep test folders, not on a kiosk).

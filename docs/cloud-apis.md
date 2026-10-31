@@ -126,7 +126,7 @@ Legend: **I** = implemented with stored state; **S** = accepted and logged only 
 | `POST /api/cms/campaign/kiosk/{id}` | KCS `CampaignService` | I | `{LastSyncTime, InCarts, StartScreens}` from active, unexpired `cloud_campaigns` for the kiosk. **208** when the posted `LastSyncTime` is at or after the last change. Start-asset `Asset.Url` points at `/cloud-files/assets/{Id}/{Name}`. |
 | `GET /cloud-files/assets/{assetId}/{name}` | KCS (download) | I | `cloud_assets.content`, or a generated PNG of the configured size and colour. |
 | `POST /api/inventory/kiosktitlescount` | KCS (dual kiosks) | I | Per kiosk, `{titleId: count}` of discs with status `In`, using the barcode-to-title map learned from transactions. Requested titles with no stock give 0. |
-| `POST /api/product/bytitleids` | KCS `ProductCatalogService` | I | `cloud_products` rows. Unknown titles are left out. Seeded empty. |
+| `POST /api/product/bytitleids` | KCS `ProductCatalogService` | I | `cloud_products` rows. Unknown titles are left out. Empty until a catalog is imported (`admin catalog-import`, [catalog.md](catalog.md)), which fills it from `profile.data`. |
 | `POST /api/kiosk/authenticate` | KCS (field staff) | I | With no `cloud_staff_users` rows, any non-empty user and password is accepted. Otherwise SHA-256 of the password must match. 401 `(KA001)` on failure. |
 | `GET /api/kiosk/{id}/nearby` | KCS | I | Kiosks within 25 miles in `cloud_kiosk_locations` (haversine), nearest first, at most 10. `IsDual` from `dual_kiosk_id`. |
 | `POST /api/kiosk/{id}/pingfailure` | UC `ReportFailedPingsJob` | S | Event `updateclient/pingfailure`. |
@@ -221,8 +221,8 @@ the same code. KCS shows it only when the last disc of the transaction comes bac
 - Vends mark the disc `Rented`/`Sold` (no slot).
 - A return puts it `In` at the returning kiosk and removes it from every other kiosk.
 - A disc vended again while an earlier rental of it is still open closes that earlier rental (implicit return).
-- Snapshots carry no title ids. Titles come from `cloud_barcodes`, learned from transaction line items, or loaded
-  by the admin.
+- Snapshots carry no title ids. Titles come from `cloud_barcodes`, which the catalog import fills from
+  `inventory.data` ([catalog.md](catalog.md)); transaction line items add or correct barcodes as they come.
 
 ### 3.6 "Not modified" (208)
 
