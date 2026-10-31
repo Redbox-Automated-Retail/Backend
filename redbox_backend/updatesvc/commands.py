@@ -86,7 +86,7 @@ async def cmd_poll_repositories(params, reply):
     repositories = await repo.repositories_for_store(number)
     if store["enabled"]:
         for name in repositories:
-            cs = await repo.change_set_for(name, heads.get(name))
+            cs = await repo.change_set_for(name, heads.get(name), number)
             if cs:
                 change_sets.append(cs)
     reply.message(dumps(change_sets))
