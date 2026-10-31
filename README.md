@@ -410,7 +410,7 @@ time. `tests/clients/sandbox/sandbox.ps1`:
   repositories with the real Update Manager code (an update-console build copied to `<Work>\control\um-bin`):
   `run-sandbox-step.ps1 -Command "& C:\rb\clients\sandbox\updatemgr-round.ps1 -Repos kioskclient"` polls as the
   sandbox's store, downloads, stages and activates into the sandbox's install folders. This is how a release was
-  rolled out to the sandbox and rolled back ([docs/releases.md](docs/releases.md#6-what-was-checked)).
+  rolled out to the sandbox and rolled back ([docs/releases.md](docs/releases.md#7-what-was-checked)).
 
 Checked twice from scratch (`down`, then `up`):
 - the sandbox provisioned itself in about 40 s without any prompt;
@@ -454,6 +454,7 @@ must also carry `X-Requested-With: rb-admin`, failed logins are slowed down and 
 | Pricing & promotions | Default / price-level / purchase pricing, promo codes, return promo, campaigns, subscription plans, ads |
 | Reservation broker | Kiosks registered with the legacy broker (connected now or not, registrations, version/pricing JSON); send a reservation to a kiosk (Reserve3), cancel one (CancelReservation), ping; history of every broker call with its result |
 | Transactions | Search authorisations, gift cards, pickups, reservations by reference, e-mail, CPN or last four; detail with rentals, returns, customer, card, request and reconcile bodies; links to rentals, returns, reservations, cards |
+| Releases | Our own builds ([docs/releases.md](docs/releases.md)): upload a release zip (published unreleased), roll a revision out to a store, a market or every store, roll back (revert revision when stores already took it), per-store status, rollout history, API tokens for CI |
 | Update Service | Repositories (revisions, head, label, snapshot, how many stores are current); publish a new revision by uploading files or a folder; rebuild a snapshot; auto-subscribe switch; store x repository matrix showing current / behind / missing and link / unlink / automatic per cell |
 | Update packages | The `data-<date>.zip` seeds in `PACKAGES_DIR`: import selected ones in the background with progress, list editions |
 | File sets | Create file sets, upload revisions (with dependencies), deploy to a kiosk, market or all on the Update Client (pushed at once) or updatemgrd channel with an activation window; kiosk states per file set |

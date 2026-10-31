@@ -195,6 +195,65 @@ def test_fileset_release(tmp_path):
     run(scenario())
 
 
+def test_dashboard_release_pages(tmp_path):
+    from fastapi.testclient import TestClient
+    from redbox_backend import db
+    from redbox_backend.dashboard import auth, server
+    from redbox_backend.updatesvc import repo, seedzip
+
+    name = "reltest-" + uuid.uuid4().hex[:8]
+    token_name = "reltest-dash-" + uuid.uuid4().hex[:6]
+    store = str(9100000 + int(uuid.uuid4().int % 800000))
+    src = tmp_path / "v1"
+    src.mkdir()
+    (src / "App.dll").write_bytes(b"one" * 1000)
+    password = "test-" + uuid.uuid4().hex
+
+    async def setup():
+        await repo.publish_revision(name, seedzip.files_from_dir(src, BUILD_ROOT), label="base")
+        await _report(store, name, "0" * 40)
+    run(setup())
+    os.environ["ADMIN_USERNAME"] = "admin"
+    os.environ["ADMIN_PASSWORD_HASH"] = auth.hash_password(password, iterations=1000)
+    server.app.state.plain = True
+    saved, db._pool = db._pool, None
+    h = {"X-Requested-With": "rb-admin"}
+    try:
+        with TestClient(server.app) as client:
+            z = release_zip(tmp_path / "r.zip", {"App.dll": b"two" * 1000}, Repository=name, Version="3.0.0")
+            assert client.post("/api/releases/upload", files={"file": ("r.zip", z.read_bytes())}, headers=h).status_code == 401
+            assert client.post("/api/login", json={"username": "admin", "password": password}).status_code == 200
+            assert client.post("/api/releases/upload", files={"file": ("r.zip", z.read_bytes())}).status_code == 403  # CSRF header
+            r = client.post("/api/releases/upload", files={"file": ("r.zip", z.read_bytes())}, data={"allow_new": "false"}, headers=h)
+            assert r.status_code == 200 and r.json()["changed"] == 1, r.text
+            rev = r.json()["revision"]
+            ov = {x["name"]: x for x in client.get("/api/releases").json()["repositories"]}
+            assert ov[name]["unreleased"] == 1 and ov[name]["served_label"] == "base"
+            r = client.post(f"/api/releases/repo/{name}/rollout", json={"revision": "3.0.0", "store": store}, headers=h)
+            assert r.status_code == 200 and r.json()["head"] == rev
+            st = client.get(f"/api/releases/repo/{name}").json()
+            mine = next(s for s in st["stores"] if s["store"] == store)
+            assert mine["served"] == rev and st["labels"][rev]["version"] == "3.0.0" and isinstance(st["markets"], list)
+            assert client.post(f"/api/releases/repo/{name}/rollout", json={"revision": "nope", "store": store}, headers=h).status_code == 400
+            r = client.post(f"/api/releases/repo/{name}/rollback", json={"store": store}, headers=h)
+            assert r.status_code == 200 and r.json()["revert"] is None
+            assert client.get(f"/api/releases/repo/{name}").json()["log"][0]["actor"] == "dashboard:admin"
+            r = client.post("/api/releases/tokens", json={"name": token_name, "scopes": ["publish"]}, headers=h)
+            assert r.status_code == 200 and r.json()["token"].startswith("rbt_")
+            assert client.post("/api/releases/tokens", json={"name": token_name}, headers=h).status_code == 409
+            assert any(t["name"] == token_name for t in client.get("/api/releases/tokens").json())
+            assert client.post("/api/releases/tokens/revoke", json={"name": token_name}, headers=h).json()["revoked"] == 1
+            assert client.get("/api/releases/repo/no-such-repo").status_code == 404
+    finally:
+        db._pool = saved
+        os.environ.pop("ADMIN_PASSWORD_HASH", None)
+
+        async def cleanup():
+            await _cleanup(name, [store])
+            await db.execute("DELETE FROM api_tokens WHERE name=%s", token_name)
+        run(cleanup())
+
+
 def test_ci_api_tokens(tmp_path):
     from fastapi.testclient import TestClient
     from redbox_backend import apitokens, db

@@ -227,7 +227,34 @@ Limits:
 For file sets, rollback is a new deployment of the older revision (`fileset-deploy <fs> <older rev> --kiosk K`):
 the Update Client and updatemgrd's file-set channel activate whatever revision they are told to.
 
-## 5. CI
+## 5. In the dashboard
+
+Everything above is also on the dashboard's **Releases** page (Software group), with the normal admin login:
+
+- **Publish:** upload a release zip (repository or file-set release), optionally allowing new files. The result shows
+  the revision, how many files changed, which were ignored or added, and links on to the rollout.
+- **Repositories:** for each, what is served by default, the newest revision (released or not), how many are
+  unreleased and how many store/market rollouts exist. Click one for its page:
+  - **Revisions** (version, label, released/unreleased, origin) with **Roll out...** for each: to one store, a
+    market (from `kiosks.market`) or every store; every store asks for confirmation.
+  - **Store and market rollouts** with **Roll back...** for each, and **Roll everyone back...**: back to what the
+    target had before, or to a chosen revision. It shows whether a revert revision was published and lists the files
+    a revert could not remove.
+  - **Stores**: what each store last reported against what it is served now (`current`, `behind`, `ahead`,
+    `unknown head`, `no report`), with roll out / roll back per store.
+  - **History** of rollouts, rollbacks and reverts, with who did them (`dashboard:<user>`, `admin-cli` or
+    `token:<name>`).
+- **Recent rollouts and rollbacks** across all repositories.
+- **API tokens (CI):** create one with `publish` and/or `deploy` scope (the token is shown once, with a copy
+  button), see when each was last used, revoke.
+
+File-set releases become file-set revisions; deploy and roll them back on the **File sets** page as before. The
+Update Service page's "Publish a new revision" form still publishes a folder as a released revision at once.
+
+The dashboard's routes for this are `/api/releases/*` (session cookie and `X-Requested-With`, like every other
+dashboard route); `/api/ci/*` stays token-only.
+
+## 6. CI
 
 The Software repository has `.github/workflows/release.yml` (not pushed yet):
 
@@ -241,7 +268,7 @@ The Software repository has `.github/workflows/release.yml` (not pushed yet):
 CI never rolls out: a published release reaches kiosks only through `rollout`. Without CI, the same steps run
 locally: `build/release.ps1`, then `admin-in <dir> release-publish /in/<zip>` or `rb-release.py publish`.
 
-## 6. What was checked
+## 7. What was checked
 
 **End to end on the Windows Sandbox kiosk** (2026-10-31; the sandbox's store only, every other store untouched):
 
@@ -277,6 +304,11 @@ repository's path spelling with framework/`.pdb` files ignored, not served until
 rollouts with fresh-kiosk snapshots, rollback by revert (old content, verified) and by pointing back, `--all`
 releasing and folding in narrower rollouts, file-set releases, and the token API (no token, wrong scope, forged,
 duplicate version, cookie routes refuse tokens).
+
+**Dashboard:** `tests/test_releases.py` covers the `/api/releases/*` routes (login and CSRF header required, upload,
+rollout, rollback, status, tokens). In a browser, against a throwaway repository: the Releases page and repository
+page rendered; a rollout to one store from **Roll out...**; after the store reported the release, **Roll back...**
+published `reltest-ui-1.0-revert` and served it to that store only; a token was created and shown once.
 
 **Builds** (this PC: Visual Studio 18 MSBuild, .NET SDKs 2.1-10, .NET Framework 3.5, packages from nuget.org), every
 component of components.json with `release.ps1 -Version 9.0.0.1`:
