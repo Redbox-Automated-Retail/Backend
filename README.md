@@ -272,6 +272,24 @@ by hand.
    activates the seed, and updatemgrd polls from those heads. Import the seeds (below) and such a kiosk is
    brought from its seed's revisions up to the served head.
 
+## Setting up a new kiosk (`provisioning/installer`)
+
+`provisioning/installer/Install-Kiosk.ps1` is an open replacement for Redbox's store installer (decompiled and
+documented in `software/docs/systems/store-installer.md`). Given a data zip, this backend's kiosk profile
+(`admin kiosk-profile`) and a KioskShell build, it provisions a fresh Windows 10/11 PC:
+
+- prerequisites;
+- the seed through the update store, activated by the kiosk's own update code;
+- the engine settings;
+- `kiosk/reprovision` for every backend setting;
+- the services;
+- the kiosk user, autologon and shell;
+- the original's hardening.
+
+The BIOS and card-reader steps are optional, and a test mode covers VMs and Windows Sandbox.
+`New-InstallerPayload.ps1` collects everything for one kiosk in one folder. `tests/sandbox.ps1` runs the installer,
+or Redbox's original one for comparison, in Windows Sandbox. See `provisioning/installer/README.md`.
+
 ## Update packages (Redbox update-store seeds)
 
 Redbox shipped its update store as `data-<date>.zip` seeds (2014-2024): `<repo>/.revlog/<n>`, `.active`,

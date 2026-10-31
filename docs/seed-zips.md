@@ -161,5 +161,6 @@ attributes.
 
 Not covered:
 
-- the store installer itself, which unpacks the zip and runs "Activate Image" (another project recreates it);
+- the store installer itself, which unpacks the zip and runs "Activate Image": `provisioning/installer` recreates
+  it and was run with Redbox's `data-572024.zip`, not yet with a built seed (see its README, "Verification");
 - a real kiosk booting from a built seed.
