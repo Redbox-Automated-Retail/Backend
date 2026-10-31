@@ -373,12 +373,50 @@ ls ~/redbox-ca              # ca.crt (PEM), ca.cer (DER, for certutil on Windows
 
 ## 6. nginx (reverse proxy)
 
+### 6.1 Real client addresses (nginx-cloudflare-real-ip)
+
+Every proxied request reaches nginx from a Cloudflare address. Cloudflare sends the kiosk's own address in
+`CF-Connecting-IP`. nginx takes it from there only when the request comes from one of Cloudflare's ranges, and
+those ranges change now and then. So they are not written into the site file. Instead,
+[ergin/nginx-cloudflare-real-ip](https://github.com/ergin/nginx-cloudflare-real-ip) keeps them current:
+
+- its `cloudflare-sync-ips.sh` fetches <https://www.cloudflare.com/ips-v4> and `ips-v6`;
+- it writes `/etc/nginx/cloudflare` (`set_real_ip_from` for each range, plus `real_ip_header CF-Connecting-IP`);
+- it then runs `nginx -t && systemctl reload nginx`.
+
+`nginx.conf` includes that file, and cron runs the script daily.
+
+```sh
+# the script, pinned to a commit (ab85fa5, the latest when this was written); it runs as root, so read it first
+sudo curl -fsSL -o /usr/local/sbin/cloudflare-sync-ips.sh \
+  https://raw.githubusercontent.com/ergin/nginx-cloudflare-real-ip/ab85fa5e61817c192bcf209c85cf6cad5f040256/cloudflare-sync-ips.sh
+less /usr/local/sbin/cloudflare-sync-ips.sh
+sudo chmod 755 /usr/local/sbin/cloudflare-sync-ips.sh
+sudo /usr/local/sbin/cloudflare-sync-ips.sh                  # writes /etc/nginx/cloudflare
+
+# include it once, in the http block of nginx.conf (not in a site file: real_ip_header may appear only once there)
+grep -q 'include /etc/nginx/cloudflare;' /etc/nginx/nginx.conf || \
+  sudo sed -i '/^http {/a\    include /etc/nginx/cloudflare;' /etc/nginx/nginx.conf
+
+# refresh daily at 02:30
+echo '30 2 * * * root /usr/local/sbin/cloudflare-sync-ips.sh >/dev/null 2>&1' | sudo tee /etc/cron.d/cloudflare-sync-ips
+sudo nginx -t && sudo systemctl reload nginx
+sudo nginx -T 2>/dev/null | grep -c set_real_ip_from         # about 22 ranges
+```
+
+The script fetches with `curl -s`, without `-f`, and rewrites the file in place. If Cloudflare's list cannot be
+fetched, the file ends up with no ranges or with junk lines. In that case `nginx -t` fails, and nginx keeps
+running with the old configuration until its next restart. If `nginx -t` ever reports an error in
+`/etc/nginx/cloudflare`, run the script again.
+
+### 6.2 The site
+
 `deploy/nginx/redbox-cloudflare.conf` is the whole site:
 
-- It trusts `CF-Connecting-IP` from Cloudflare's address ranges, so logs show the kiosk's address.
 - It sends the ten kiosk API names to `rb-cloudapi` (`127.0.0.1:8080`) and `admin.example.net` to `rb-admin`
   (`127.0.0.1:8443`).
 - It closes the connection for any other name.
+- It logs to `/var/log/nginx/redbox-*.log`, with the kiosk's address thanks to 6.1.
 
 ```sh
 sed 's/example\.net/your-domain.tld/g' deploy/nginx/redbox-cloudflare.conf | sudo tee /etc/nginx/sites-available/redbox >/dev/null
@@ -399,8 +437,8 @@ What the site does, and why:
 - **If this server also hosts other sites:** they keep working. Only the names listed in this file are routed to
   the backend. Remove this file's `default_server` block if another site already has one.
 
-**Cloudflare's address ranges change occasionally.** Compare the `set_real_ip_from` list with
-<https://www.cloudflare.com/ips/> now and then, together with the firewall list in section 7.
+The firewall's Cloudflare rules (section 7) are written once from the same lists. Run that loop again when
+Cloudflare announces new ranges.
 
 ## 7. Firewall
 
