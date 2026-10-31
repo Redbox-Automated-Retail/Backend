@@ -486,6 +486,7 @@ the dashboard shows rentals and returns but no money.
 |---|---|
 | Overview | Kiosks online (MQTT or seen in the last 20 min) / stale / offline, rentals today, discs out, open reservations |
 | Kiosks | Every kiosk sorted by status: location, last seen, engine and Update Client versions, configuration version, discs; filter, tick several and send one IoT command to all of them |
+| Stores | The stores a new kiosk can be set up as: the kiosk installer lists the offered ones by state and banner (Proxy API `/api/installer/getpending*`) and the store picked gives the kiosk its ID, address and market (`getopsmarket`). Add or edit a store (state, banner, address, market, Kaseya market, due time), stop offering it once installed; shows whether its kiosk has connected |
 | Kiosk detail | Tabs: overview (key facts, software, recent activity), software (repositories, file sets, reported versions, deployments), inventory, rentals, reservations, commands (history of every IoT request and answer), files (peek, upload, uploaded files), events, settings (market, banner, time zone, location; reprovision file, installer settings, IoT certificates); Ping, push configuration, file-set check, clock sync, reboot |
 | System health | Every service's health and answer time, certificates and their expiry, the `.env` settings in effect (no secrets), largest tables, disk |
 | Rentals & returns | Discs rented, bought and returned, with the title of each, by kiosk, status, barcode or title |
@@ -501,7 +502,7 @@ the dashboard shows rentals and returns but no money.
 | File sets | Create file sets, upload revisions (with dependencies), deploy to a kiosk, market or all on the Update Client (pushed at once) or updatemgrd channel with an activation window; kiosk states per file set |
 | Configuration | Kiosk configuration values (default / market / kiosk), set or delete and push; engine config files (updatemgrd) with per-setting editing that publishes a new generation |
 | Remote commands | Any IoT command to a kiosk, market or all (templates for Ping, triggers, clock sync, certificate renewal, `ExecuteHttpRequest` on the kiosk's local APIs, ...), download-file jobs with a PowerShell script, updatemgrd download files with a Lua script, request/answer history, files uploaded by kiosks |
-| Provisioning | Installer `settings.json` and reprovision files for a new kiosk, the backend CA, stores offered to the kiosk installer, IoT certificates (revoke), Update Client registrations, store-installer sessions |
+| Provisioning | Installer `settings.json` and reprovision files for a new kiosk, the backend CA, IoT certificates (revoke), Update Client registrations, store-installer sessions |
 | Users & access | Dashboard accounts and roles, CI tokens, field-staff logins for the kiosk's staff screens, kiosk authentication settings (Cloud API keys, MQTT client certificates, Update Service credentials) |
 | Audit log | Every change made in the dashboard (who, what, result) and sign-ins |
 | Logs & events | Everything the services record (telemetry, status messages, transfer statistics, IoT traffic, logins, dashboard edits), filtered by kiosk, source, kind or text, with auto-refresh |

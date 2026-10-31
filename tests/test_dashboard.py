@@ -238,3 +238,31 @@ def test_kiosk_edit_and_activity(client):
     assert d["kiosk"]["banner"] == "Test banner" and d["location"]["label"] == "Dash test"
     a = client.get(f"/api/kiosks/{kiosk}/activity").json()
     assert {"requests", "reservations", "inventory", "certificates", "uploads", "daily"} <= set(a)
+
+
+def test_stores_feed_the_kiosk_installer(client):
+    login(client)
+    sid = 990600 + uuid.uuid4().int % 300
+    state = "St-" + uuid.uuid4().hex[:6]
+    r = client.post("/api/stores", headers=H, json={"id": sid, "label": "Dash store", "state_name": state, "banner_name": "Dash banner",
+                                                     "address": "1 Main St", "city": "Dallas", "zip": "75201", "market_name": "Dash market",
+                                                     "pending": True})
+    assert r.status_code == 200, r.text
+    s = next(x for x in client.get("/api/stores").json()["stores"] if x["id"] == sid)
+    assert s["state_name"] == state and s["ops_market"] == "Dash market" and s["label"] == "Dash store"
+    try:
+        # what the kiosk installer asks the Proxy API during setup: state, then banner, then store, then its ops market
+        api = cc.client()
+        states = api.get("/api/installer/getpendingstates").json()["States"]
+        assert {"Id": s["state_id"], "Description": state} in states
+        banners = api.get(f"/api/installer/getpendingbanners?stateid={s['state_id']}").json()["Banners"]
+        assert [b["Name"] for b in banners] == ["Dash banner"]
+        kiosks = api.get(f"/api/installer/getpendingkiosks?stateid={s['state_id']}&bannerid={banners[0]['Id']}").json()["PendingKiosks"]
+        assert [(k["Id"], k["City"], k["MarketName"]) for k in kiosks] == [(sid, "Dallas", "Dash market")]
+        assert api.get(f"/api/installer/getopsmarket?kioskid={sid}").json()["OpsMarket"] == "Dash market"
+        # no longer offered: gone from the installer's list
+        assert client.post("/api/stores", headers=H, json=dict(s, pending=False)).status_code == 200
+        assert not api.get(f"/api/installer/getpendingbanners?stateid={s['state_id']}").json()["Banners"]
+    finally:
+        client.post("/api/stores/delete", headers=H, json={"id": sid})
+        cc.client().sql("DELETE FROM cloud_kiosk_locations WHERE kiosk_id = %s", sid)

@@ -98,12 +98,13 @@ const ICON = {
   undo: "M3 7v6h6M21 17a9 9 0 0 0-15-6.7L3 13",
   plus: "M12 5v14M5 12h14",
   check: "M20 6 9 17l-5-5",
+  pin: "M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21zM12 12a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z",
   audit: "M9 11l3 3 8-8M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9",
 };
 const ic = (n) => `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="${ICON[n]}"/></svg>`;
 
 const NAV = [
-  ["Control center", [["overview", "home", "Overview"], ["kiosks", "kiosk", "Kiosks"], ["system", "pulse", "System health"]]],
+  ["Control center", [["overview", "home", "Overview"], ["kiosks", "kiosk", "Kiosks"], ["stores", "pin", "Stores"], ["system", "pulse", "System health"]]],
   ["Kiosk activity", [["rentals", "cart", "Rentals & returns"], ["data/reservations", "ticket", "Reservations"], ["broker", "link", "Reservation broker"],
     ["data/customers", "users", "Customers"], ["pricing", "gift", "Pricing & offers"], ["tickets", "ticket", "Event tickets"]]],
   ["Content", [["catalog", "film", "Catalog"], ["data/inventory", "disc", "Inventory"], ["packages", "box", "Data zips"]]],
@@ -1424,6 +1425,66 @@ routes.logs = async () => {
   await load();
 };
 
+// ----------------------------------------------------------------------------------------- stores
+// The stores a kiosk can be set up as. The kiosk installer lists the pending ones (state, banner, store) from the
+// Proxy API; the store picked gives the kiosk its id, address and market.
+routes.stores = async () => {
+  const d = await api("/stores");
+  const q = query();
+  view().innerHTML = head("Stores", `${d.stores.length} stores · ${d.stores.filter((s) => s.pending).length} offered to the kiosk installer`,
+    can() ? `<button class="primary" id="ns">${ic("plus")}Add a store</button>` : "") + `
+    <p class="muted" style="margin-top:-8px">During setup the kiosk installer lists the <b>offered</b> stores by state and banner; picking one gives the
+      kiosk its store ID, address and market. Once the kiosk has connected you can stop offering the store.</p>
+    <div class="toolbar"><div class="search grow">${ic("search")}<input id="sf" placeholder="Store, address, city, market" value="${esc(q.q || "")}"></div>
+      <select id="ss"><option value="">all</option><option value="1">offered</option><option value="0">not offered</option></select></div>
+    <div class="card flush" id="st"></div>`;
+  const draw = () => {
+    const f = $("#sf").value.toLowerCase(), o = $("#ss").value;
+    const list = d.stores.filter((s) => (!o || String(+s.pending) === o) && (!f || JSON.stringify([s.id, s.address, s.city, s.state_name, s.market_name, s.banner_name, s.label]).toLowerCase().includes(f)));
+    $("#st").innerHTML = table(list, [{ key: "id", label: "Store", render: (v, s) => `<b>${esc(v)}</b>${s.label ? ` <span class="muted">${esc(s.label)}</span>` : ""}` },
+      { key: "banner_name", label: "Banner" }, { key: "address", label: "Address", render: (v, s) => `<span class="muted">${esc([v, s.city, s.state_name, s.zip].filter(Boolean).join(", "))}</span>` },
+      { key: "market_name", label: "Market" },
+      { key: "pending", label: "Installer", render: (v) => v ? '<span class="st ok"><span class="dot"></span>Offered</span>' : '<span class="st mute">Not offered</span>' },
+      { key: "last_seen_at", label: "Kiosk", render: (v, s) => v ? `<a class="link" href="#/kiosk/${esc(s.id)}">seen ${esc(ago(v))}</a>` : '<span class="dim">not set up yet</span>' }],
+      { onclick: can(), pad: true, empty: "No stores yet. Add one so a new kiosk can be set up as it." });
+    bindRows($("#st"), list, (s) => storeDialog(s));
+  };
+  const storeDialog = (s) => {
+    const opts = (rows, id, name, cur) => rows.map((r) => `<option value="${esc(r[id])}" ${String(r[id]) === String(cur) ? "selected" : ""}>${esc(r[name])}</option>`).join("");
+    const m = modal(`<h3>${s ? "Store " + esc(s.id) : "Add a store"}</h3><form id="sf2"><div class="grid2" style="gap:0 16px">
+        <label>Store ID <input name="id" type="number" required value="${esc(s ? s.id : "")}" ${s ? "readonly" : ""}></label>
+        <label>Name / label <input name="label" value="${esc(s ? s.label || "" : "")}" placeholder="e.g. Walgreens Mockingbird"></label>
+        <label>State <select name="state_id"><option value="">new state...</option>${opts(d.states, "state_id", "state_name", s && s.state_id)}</select>
+          <input name="state_name" placeholder="State name" value="${esc(s ? s.state_name : "")}" style="margin-top:6px"></label>
+        <label>Banner <select name="banner_id"><option value="">new banner...</option>${opts(d.banners, "banner_id", "banner_name", s && s.banner_id)}</select>
+          <input name="banner_name" placeholder="Banner (retailer) name" value="${esc(s ? s.banner_name : "")}" style="margin-top:6px"></label>
+        <label>Address <input name="address" value="${esc(s ? s.address || "" : "")}"></label>
+        <label>City <input name="city" value="${esc(s ? s.city || "" : "")}"></label>
+        <label>ZIP <input name="zip" value="${esc(s ? s.zip || "" : "")}"></label>
+        <label>Market <input name="market_name" list="mk" value="${esc(s ? s.market_name || "" : "")}"><datalist id="mk">${d.markets.map((x) => `<option>${esc(x)}</option>`).join("")}</datalist></label>
+        <label>Kaseya market <input name="kaseya_market_name" value="${esc(s ? s.kaseya_market_name || "" : "")}"></label>
+        <label>Due time <input name="due_time" value="${esc(s ? s.due_time || "" : "")}" placeholder="e.g. 9:00 PM"></label></div>
+        <label><input type="checkbox" name="pending" ${!s || s.pending ? "checked" : ""}> offer this store in the kiosk installer</label>
+        <div class="toolbar mt"><button class="primary">${s ? "Save" : "Add store"}</button><button type="button" id="cl">Cancel</button><span class="grow"></span>
+          ${s ? '<button type="button" class="danger" id="del">Remove from the installer list</button>' : ""}</div></form>`);
+    const f = $("#sf2", m);
+    const sync = (sel, input, rows, id, name) => { sel.onchange = () => { const r = rows.find((x) => String(x[id]) === sel.value); input.value = r ? r[name] : ""; input.classList.toggle("hidden", !!r); }; sel.onchange(); };
+    sync(f.state_id, f.state_name, d.states, "state_id", "state_name");
+    sync(f.banner_id, f.banner_name, d.banners, "banner_id", "banner_name");
+    $("#cl", m).onclick = closeModal;
+    f.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const b = Object.fromEntries(new FormData(f)); b.pending = !!b.pending;
+      await act(() => api("/stores", { body: b }), `Store ${b.id} saved`); closeModal(); route();
+    });
+    if (s) $("#del", m).onclick = async () => {
+      if (!confirm(`Take store ${s.id} off the installer's list?`)) return;
+      await act(() => api("/stores/delete", { body: { id: s.id } }), "Removed"); closeModal(); route();
+    };
+  };
+  if ($("#ns")) $("#ns").onclick = () => storeDialog(null);
+  $("#sf").addEventListener("input", draw); $("#ss").onchange = draw; draw();
+};
 // ---------------------------------------------------------------------------------- system health
 const bytes = (n) => { n = Number(n || 0); const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0; while (n >= 1024 && i < 4) { n /= 1024; i++; } return `${n.toFixed(i ? 1 : 0)} ${u[i]}`; };
 const dur = (s) => { s = Number(s || 0); const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60); return d ? `${d} d ${h} h` : h ? `${h} h ${m} min` : `${m} min`; };
@@ -1579,7 +1640,7 @@ routes.provisioning = async (tab = "kiosks") => {
         <div>Public IP</div><div>${esc(d.backend_ip)}</div>
         <div>Hosts entries</div><div>${d.host_entries.length ? d.host_entries.map(esc).join("<br>") : '<span class="muted">from the public IP</span>'}</div></div>
         <p class="muted">Kiosks reach the services by these names: ${Object.keys(d.service_hosts || {}).length ? Object.values(d.service_hosts).map((h) => `<code>${esc(h)}</code>`).join(", ") : "see docs/deploy-linux.md"}.</p></div></div>
-      <div class="card flush mt"><div class="card-h"><h2>Stores waiting for the kiosk installer</h2><a class="more" href="#/data/installer_kiosks">Edit →</a></div>
+      <div class="card flush mt"><div class="card-h"><h2>Stores offered to the kiosk installer</h2><a class="more" href="#/stores">Manage stores →</a></div>
         ${table(d.installer_kiosks, [{ key: "id", label: "Store", render: (v) => `<b>${esc(v)}</b>` }, { key: "banner_name", label: "Banner" }, { key: "market_name", label: "Market" },
           { key: "address", label: "Address", render: (v, r) => esc([v, r.city, r.state_name, r.zip].filter(Boolean).join(", ")) },
           { key: "pending", label: "", right: true, render: (v) => v ? '<span class="st warn"><span class="dot warn"></span>Pending</span>' : '<span class="st mute">Installed</span>' }], { pad: true, empty: "None. Add stores here to offer them in the Redbox kiosk installer's store list." })}</div>`;

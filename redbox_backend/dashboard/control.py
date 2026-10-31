@@ -553,3 +553,62 @@ async def rentals(kind: str = "rentals", kiosk_id: Optional[str] = None, status:
         " LEFT JOIN catalog_rows t ON t.tbl = 'ProductType' AND t.key = c.value->>'product_type_id'"
         f"{clause} ORDER BY {when} DESC LIMIT %s OFFSET %s", *args, min(limit, 500), offset)
     return srv.ok({"total": await db.fetchval(f"SELECT count(*) FROM {table}{clause}", *args), "rows": rows})
+
+
+# ------------------------------------------------------------------------------------------- stores
+
+STORE_FIELDS = ("state_id", "state_name", "banner_id", "banner_name", "address", "city", "zip", "due_time", "market_name",
+                "kaseya_market_name", "pending")
+
+
+@router.get("/api/stores")
+async def stores():
+    """The stores a kiosk can be set up as: the kiosk installer offers the pending ones (state, then banner, then
+    store; Proxy API /api/installer/getpending*) and the chosen store gives the kiosk its id, address and market."""
+    rows = await db.fetch(
+        "SELECT s.*, l.label, l.ops_market, l.kaseya_server, l.latitude, l.longitude, k.last_seen_at, k.market AS kiosk_market"
+        " FROM cloud_installer_kiosks s LEFT JOIN cloud_kiosk_locations l ON l.kiosk_id = s.id"
+        " LEFT JOIN kiosks k ON k.kiosk_id = s.id ORDER BY s.id")
+    return srv.ok({"stores": rows,
+                   "states": await db.fetch("SELECT DISTINCT state_id, state_name FROM cloud_installer_kiosks ORDER BY state_name"),
+                   "banners": await db.fetch("SELECT DISTINCT banner_id, banner_name FROM cloud_installer_kiosks ORDER BY banner_name"),
+                   "markets": [r["m"] for r in await db.fetch(
+                       "SELECT DISTINCT market_name AS m FROM cloud_installer_kiosks WHERE market_name <> ''"
+                       " UNION SELECT DISTINCT market FROM kiosks WHERE market <> '' ORDER BY 1")]})
+
+
+@router.post("/api/stores")
+async def store_save(body: dict):
+    """Add or change a store: its installer entry and its location (address, ops market for getopsmarket). The kiosk
+    row itself is made when the kiosk first calls in; an existing one gets the market and banner."""
+    try:
+        sid = int(body["id"])
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(400, "store id (a number) required")
+    v = {f: body.get(f) for f in STORE_FIELDS}
+    for name, idf in (("state_name", "state_id"), ("banner_name", "banner_id")):
+        if not (v[name] or "").strip():
+            raise HTTPException(400, f"{name.split('_')[0]} required")
+        if v[idf] in (None, ""):   # a new state / banner: reuse the id of the same name, else the next free one
+            col = idf
+            v[idf] = await db.fetchval(f"SELECT {col} FROM cloud_installer_kiosks WHERE lower({name}) = lower(%s) LIMIT 1", v[name]) \
+                or (await db.fetchval(f"SELECT coalesce(max({col}), 0) + 1 FROM cloud_installer_kiosks"))
+        v[idf] = int(v[idf])
+    v["pending"] = bool(v["pending"]) if v["pending"] is not None else True
+    cols = list(v)
+    await db.execute(f"INSERT INTO cloud_installer_kiosks (id, {', '.join(cols)}) VALUES (%s, {', '.join(['%s'] * len(cols))})"
+                     f" ON CONFLICT (id) DO UPDATE SET {', '.join(f'{c} = EXCLUDED.{c}' for c in cols)}", sid, *v.values())
+    loc = {"label": body.get("label") or None, "address": v["address"], "city": v["city"], "state": v["state_name"],
+           "zip": v["zip"], "ops_market": body.get("ops_market") or v["market_name"], "kaseya_server": body.get("kaseya_server") or None}
+    lc = list(loc)
+    await db.execute(f"INSERT INTO cloud_kiosk_locations (kiosk_id, {', '.join(lc)}) VALUES (%s, {', '.join(['%s'] * len(lc))})"
+                     f" ON CONFLICT (kiosk_id) DO UPDATE SET {', '.join(f'{c} = EXCLUDED.{c}' for c in lc)}", sid, *loc.values())
+    await db.execute("UPDATE kiosks SET market = %s, banner = %s WHERE kiosk_id = %s", v["market_name"] or None, v["banner_name"], sid)
+    await db.record_event(sid, "dashboard", "store-save", {"store": sid, "by": _who()})
+    return srv.ok({"saved": sid})
+
+
+@router.post("/api/stores/delete")
+async def store_delete(body: dict):
+    """Take a store off the installer's list (its location and kiosk record stay)."""
+    return srv.ok({"deleted": await db.execute("DELETE FROM cloud_installer_kiosks WHERE id = %s", int(body["id"]))})
