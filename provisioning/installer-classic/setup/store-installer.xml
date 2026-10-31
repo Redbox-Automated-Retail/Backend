@@ -1,0 +1,240 @@
+<?xml version="1.0"?>
+<!--
+  The setup script of Redbox's Windows 10 store installer (Windows10-Store-Installer-3.1.0.48-setup.exe, decoded
+  PREREQ/SCRIPT; software/docs/systems/store-installer.md section 3), forked for Windows 10/11 and a self-hosted
+  backend. Build-ClassicInstaller.ps1 stages the files named here and rixc embeds them. Changes from the original:
+    - a kiosk profile page after the data file page (kiosk-profile.json next to setup.exe, from the backend's
+      `admin kiosk-profile`); it sets StoreNumber, which the front end gets as -n:
+    - files: our builds and the seed's update manager files instead of Kaseya, McAfee, nxlog, NAnt, Blink, DigiCert,
+      the XP patches and .NET 4.7.2 (the host needs .NET 4.8 to start at all); rb-reprovision and the step helpers
+      are new; hal.xml next to setup.exe is installed when present
+    - the front end's Lua scripts are the fork's (scripts\), see installer-steps.lua
+  Optional files (Ingenico driver, wallpapers) carry optional="true"; the build drops them when not given.
+  Keep this file ASCII: the host decodes the script as ASCII.
+-->
+<rix id="{ED5CD67C-9BD5-4397-9ADB-4A3AE621AE0D}" name="Store Installer" icon="reds-icon.ico" security-level="Administrator" uninstall="false" allow-modify="true" reboot="Always">
+  <!-- Installer configuration -->
+  <property name="ProductName" value="Redbox Store Installer" />
+  <property name="ProductVersion" value="1.0.0.0" />
+  <property name="StoreNumber" value="unconfigured" />
+  <property name="UpdateManagerTarget" value="C:\Program Files\Redbox\REDS\Update Manager\bin" />
+  <property name="InstallPath" value="C:\Program Files\Redbox\REDS\$(ProductName) $(ProductVersion)" />
+  <property name="RepositoryPath" value="C:\Program Files\Redbox\REDS\Update Manager\.store\.repository" />
+  <property name="REDS" value="C:\Program Files\Redbox\REDS" />
+  <property name="OSRequired" value="6.2" />
+  <!-- UI configuration -->
+  <property name="Width" value="640" />
+  <property name="Height" value="480" />
+  <property name="BannerImage" value="banner-image" />
+  <property name="MarginImage" value="margin-image" />
+  <file id="margin-image" source-path="margin.bmp" copy="false" compression="lzma" />
+  <file id="banner-image" source-path="banner.jpg" copy="false" />
+  <!-- Pages -->
+  <page id="welcome" type="welcome" subtitle="This installer will take approximately 10 minutes" />
+  <page id="select-file-path" type="custom" template="select-file-page" title="Select Data File Location" subtitle="The data.zip file should be in the same directory as the installer." />
+  <page id="select-kiosk-profile" type="custom" template="select-profile-page" title="Select Kiosk Profile" subtitle="The kiosk-profile.json file from the backend should be in the same directory as the installer." />
+  <page id="select-kiosk-type" type="custom" template="select-kiosk-page" title="Select Kiosk Type" subtitle="" />
+  <page id="select-date-time-page" type="custom" template="date-time-page" title="Set Date and Time" />
+  <page id="install-progress" type="progress" />
+  <page id="finish" type="finish" subtitle="The kiosk number and the backend come from the kiosk profile. Use Control Alt Enter to start the engine after the reboot." />
+  <!-- External files, next to setup.exe -->
+  <file id="repository" source-path="data.zip" destination-path="${RepositoryPath}" external="true" delete-after-explode="false" explode-target-path="${RepositoryPath}" explode-on-copy="true" execute-assembly-installer="false" />
+  <file id="kiosk-profile" source-path="kiosk-profile.json" destination-path="${REDS}\Installers" external="true" execute-assembly-installer="false" />
+  <file id="hal-config" source-path="hal.xml" destination-path="${REDS}\Installers" external="true" execute-assembly-installer="false" if="System.IO.File.Exists( System.IO.Path.Combine( System.AppDomain.CurrentDomain.BaseDirectory, 'hal.xml' ) )" />
+  <!-- Prerequisites (the original also ran .NET 4.7.2 at order 96; this host needs 4.8 to start) -->
+  <execute-process id="dotnet-runtime-2.2.1-win-x86.exe" report-error="false" mode="Install" launch-only="false" wait-for-exit="true" suppress-windows="true" use-shell="false" filename="${REDS}\Installers\dotnet-runtime-2.2.1-win-x86.exe" working-dir="${REDS}\Installers" arguments="/install /quiet /norestart" install-order="97" />
+  <execute-process id="aspnetcore-runtime-2.2.1-win-x86.exe" report-error="false" mode="Install" launch-only="false" wait-for-exit="true" suppress-windows="true" use-shell="false" filename="${REDS}\Installers\aspnetcore-runtime-2.2.1-win-x86.exe" working-dir="${REDS}\Installers" arguments="/install /quiet /norestart" install-order="98" />
+  <execute-process id="IngenicoUSBDrivers_3.14_setup.exe" optional="true" report-error="false" mode="Install" launch-only="false" wait-for-exit="true" suppress-windows="true" use-shell="false" filename="${REDS}\Installers\IngenicoUSBDrivers_3.14_setup.exe" working-dir="${REDS}\Installers" arguments="/S /PORT=7 /PID=0057:7" install-order="99" />
+  <execute-process id="installer-front-end.exe" report-error="true" mode="Install" launch-only="false" wait-for-exit="true" suppress-windows="true" use-shell="false" filename="${UpdateManagerTarget}\installer-front-end.exe" working-dir="${UpdateManagerTarget}" arguments="-n:${StoreNumber} --eval:..\scripts\post-install.lua" install-order="100" />
+  <page-template id="select-file-page" allow-move-next="true" allow-move-back="true" allow-cancel="true" title="Select Data.zip Location" proceed-text="To continue, click Next."><event-handler name="Activate" function-name="onActivated">
+            function onActivated() : boolean {
+				page.AllowMoveNext = false;
+				if ( File.Exists( Path.Combine( AppDomain.CurrentDomain.BaseDirectory, 'data.zip' )))
+				{
+					page.errorProvider.SetError( page.pathTextBox, String.Empty );
+					page.informationBox.Text = 'Data.zip was found:';
+					page.pathTextBox.Text = Path.Combine( AppDomain.CurrentDomain.BaseDirectory, 'data.zip' );
+				}
+				else
+				{
+					page.errorProvider.SetError( page.pathTextBox, 'Please specify a valid data file.' );
+					page.informationBox.Text = 'Data.zip was not found:';
+					page.pathTextBox.Text = 'Please Select data file location...';
+					page.AllowMoveNext = false;
+				}
+				if( !Directory.Exists( rix.project.InstallPath ) ) {
+					try {
+						System.IO.Directory.CreateDirectory( rix.project.InstallPath );
+					}
+					catch( e : Exception ) {
+						return false;
+					}
+				}
+                return false;
+            }
+        </event-handler><event-handler name="Deactivate" function-name="onDeactivated">
+            function onDeactivated() : void {
+            }
+        </event-handler><event-handler name="Validate" function-name="onValidate">
+			function onValidate() : boolean {
+                if( !File.Exists( Path.Combine( AppDomain.CurrentDomain.BaseDirectory, 'data.zip' )) ) {
+                    page.errorProvider.SetError( page.pathTextBox, 'Please specify a valid data file.' );
+					System.Windows.Forms.MessageBox.Show('Please select a data file.');
+					return false;
+                }
+                return true;
+            }
+        </event-handler><element Name="errorProvider" Type="System.Windows.Forms.ErrorProvider" /><element Name="layoutPanel" ColumnCount="2" Dock="Fill" Location="0,0" Size="286,256" RowCount="5" TabIndex="0" Type="System.Windows.Forms.TableLayoutPanel"><element UseConstructor="true" SizeType="Percent" Width="100" Type="System.Windows.Forms.ColumnStyle" Add-Target="ColumnStyles" /><element UseConstructor="true" SizeType="Absolute" Width="71" Type="System.Windows.Forms.ColumnStyle" Add-Target="ColumnStyles" /><element UseConstructor="true" SizeType="Absolute" Height="49" Type="System.Windows.Forms.RowStyle" Add-Target="RowStyles" /><element UseConstructor="true" Type="System.Windows.Forms.RowStyle" Add-Target="RowStyles" /><element UseConstructor="true" Type="System.Windows.Forms.RowStyle" Add-Target="RowStyles" /><element UseConstructor="true" Type="System.Windows.Forms.RowStyle" Add-Target="RowStyles" /><element UseConstructor="true" SizeType="Absolute" Height="8" Type="System.Windows.Forms.RowStyle" Add-Target="RowStyles" /><element UseConstructor="true" SizeType="Absolute" Height="20" Type="System.Windows.Forms.RowStyle" Add-Target="RowStyles" /><element Name="instructionLabel" AutoSize="true" Location="3, 106" Size="208, 26" Text="If you would like to select a different data file, click Browse." Type="System.Windows.Forms.Label" Add-Target="Controls" Add-Column="0" Add-Row="2" /><element Name="pathTextBox" AutoCompleteMode="Suggest" AutoCompleteSource="FileSystem" Dock="Fill" Location="3, 135" Margin="3, 3, 32, 3" MaxLength="1024" Size="180, 20" TabIndex="1" Type="System.Windows.Forms.TextBox" Add-Target="Controls" Add-Column="0" Add-Row="3" /><element Name="browseButton" Location="218,135" Size="65,23" TabIndex="2" Text="Browse..." UseVisualStyleBackColor="true" Type="System.Windows.Forms.Button" Add-Target="Controls" Add-Column="1" Add-Row="3"><event-handler name="Click" function-name="onBrowseClicked">
+                    function onBrowseClicked( sender : Object, args : EventArgs ) : void {
+                        var browser : System.Windows.Forms.OpenFileDialog = new System.Windows.Forms.OpenFileDialog();
+                        browser.InitialDirectory = AppDomain.CurrentDomain.BaseDirectory;
+						browser.Filter = "zip files (*.zip)|*.zip|All files (*.*)|*.*" ;
+                        if( browser.ShowDialog() == System.Windows.Forms.DialogResult.OK ) {
+                            page.pathTextBox.Text = browser.FileName;
+							var dataFilePath = Path.Combine( AppDomain.CurrentDomain.BaseDirectory, 'data.zip' )
+							if( dataFilePath != browser.FileName )
+							{
+								if (File.Exists(dataFilePath))
+								{
+									File.Delete(dataFilePath);
+								}
+								File.Copy(browser.FileName, dataFilePath);
+							}
+							page.errorProvider.SetError( page.pathTextBox, String.Empty );
+							page.informationBox.Text = 'Data file was found:';
+                        }
+                    }
+                </event-handler></element><element Name="informationBox" Dock="Fill" Location="3,52" Size="209,51" TabIndex="3" Type="Divelements.WizardFramework.InformationBox" Add-Target="Controls" Add-Column="0" Add-Row="1" /></element></page-template>
+  <!-- Fork: the kiosk profile, modelled on select-file-page. -->
+  <page-template id="select-profile-page" allow-move-next="true" allow-move-back="true" allow-cancel="true" title="Select Kiosk Profile" proceed-text="To continue, click Next."><event-handler name="Activate" function-name="onActivated">
+            function onActivated() : boolean {
+				showProfile( Path.Combine( AppDomain.CurrentDomain.BaseDirectory, 'kiosk-profile.json' ) );
+                return false;
+            }
+        </event-handler><event-handler name="Deactivate" function-name="onDeactivated">
+            function onDeactivated() : void {
+				var kioskId : String = rix.readJsonValue( Path.Combine( AppDomain.CurrentDomain.BaseDirectory, 'kiosk-profile.json' ), 'KioskId' );
+				if ( !String.IsNullOrEmpty( kioskId ) ) {
+					rix.macros["StoreNumber"] = kioskId;
+				}
+            }
+        </event-handler><event-handler name="Validate" function-name="onValidate">
+			function onValidate() : boolean {
+				var profilePath = Path.Combine( AppDomain.CurrentDomain.BaseDirectory, 'kiosk-profile.json' );
+                if( !File.Exists( profilePath ) || String.IsNullOrEmpty( rix.readJsonValue( profilePath, 'KioskId' ) ) ) {
+                    page.errorProvider.SetError( page.pathTextBox, 'Please specify a valid kiosk profile.' );
+					System.Windows.Forms.MessageBox.Show('Please select a kiosk profile.');
+					return false;
+                }
+                return true;
+            }
+        </event-handler><script>
+			function showProfile( profilePath : String ) : void {
+				var kioskId : String = rix.readJsonValue( profilePath, 'KioskId' );
+				if ( !String.IsNullOrEmpty( kioskId ) )
+				{
+					page.errorProvider.SetError( page.pathTextBox, String.Empty );
+					page.informationBox.Text = 'Kiosk profile for kiosk ' + kioskId + ' was found:';
+					page.pathTextBox.Text = profilePath;
+				}
+				else
+				{
+					page.errorProvider.SetError( page.pathTextBox, 'Please specify a valid kiosk profile.' );
+					page.informationBox.Text = 'Kiosk-profile.json was not found:';
+					page.pathTextBox.Text = 'Please select the kiosk profile...';
+				}
+			}
+        </script><element Name="errorProvider" Type="System.Windows.Forms.ErrorProvider" /><element Name="layoutPanel" ColumnCount="2" Dock="Fill" Location="0,0" Size="286,256" RowCount="5" TabIndex="0" Type="System.Windows.Forms.TableLayoutPanel"><element UseConstructor="true" SizeType="Percent" Width="100" Type="System.Windows.Forms.ColumnStyle" Add-Target="ColumnStyles" /><element UseConstructor="true" SizeType="Absolute" Width="71" Type="System.Windows.Forms.ColumnStyle" Add-Target="ColumnStyles" /><element UseConstructor="true" SizeType="Absolute" Height="49" Type="System.Windows.Forms.RowStyle" Add-Target="RowStyles" /><element UseConstructor="true" Type="System.Windows.Forms.RowStyle" Add-Target="RowStyles" /><element UseConstructor="true" Type="System.Windows.Forms.RowStyle" Add-Target="RowStyles" /><element UseConstructor="true" Type="System.Windows.Forms.RowStyle" Add-Target="RowStyles" /><element UseConstructor="true" SizeType="Absolute" Height="8" Type="System.Windows.Forms.RowStyle" Add-Target="RowStyles" /><element UseConstructor="true" SizeType="Absolute" Height="20" Type="System.Windows.Forms.RowStyle" Add-Target="RowStyles" /><element Name="instructionLabel" AutoSize="true" Location="3, 106" Size="208, 26" Text="The kiosk profile comes from the backend (admin kiosk-profile). To select a different one, click Browse." Type="System.Windows.Forms.Label" Add-Target="Controls" Add-Column="0" Add-Row="2" /><element Name="pathTextBox" AutoCompleteMode="Suggest" AutoCompleteSource="FileSystem" Dock="Fill" Location="3, 135" Margin="3, 3, 32, 3" MaxLength="1024" Size="180, 20" TabIndex="1" Type="System.Windows.Forms.TextBox" Add-Target="Controls" Add-Column="0" Add-Row="3" /><element Name="browseButton" Location="218,135" Size="65,23" TabIndex="2" Text="Browse..." UseVisualStyleBackColor="true" Type="System.Windows.Forms.Button" Add-Target="Controls" Add-Column="1" Add-Row="3"><event-handler name="Click" function-name="onBrowseClicked">
+                    function onBrowseClicked( sender : Object, args : EventArgs ) : void {
+                        var browser : System.Windows.Forms.OpenFileDialog = new System.Windows.Forms.OpenFileDialog();
+                        browser.InitialDirectory = AppDomain.CurrentDomain.BaseDirectory;
+						browser.Filter = "kiosk profiles (*.json)|*.json|All files (*.*)|*.*" ;
+                        if( browser.ShowDialog() == System.Windows.Forms.DialogResult.OK ) {
+							var profilePath = Path.Combine( AppDomain.CurrentDomain.BaseDirectory, 'kiosk-profile.json' )
+							if( profilePath != browser.FileName )
+							{
+								if (File.Exists(profilePath))
+								{
+									File.Delete(profilePath);
+								}
+								File.Copy(browser.FileName, profilePath);
+							}
+							showProfile( profilePath );
+                        }
+                    }
+                </event-handler></element><element Name="informationBox" Dock="Fill" Location="3,52" Size="209,51" TabIndex="3" Type="Divelements.WizardFramework.InformationBox" Add-Target="Controls" Add-Column="0" Add-Row="1" /></element></page-template>
+  <page-template id="date-time-page" allow-move-next="true" allow-move-back="true" allow-cancel="true" title="Configure Date Time" subtitle="Please make sure to set your timezone.  Once you have set the correct date and time click next." proceed-text="To continue, click Next."><event-handler name="Configure" function-name="onConfigure">
+            function onConfigure() : void {
+            }
+        </event-handler><event-handler name="Activate" function-name="onActivated"><![CDATA[
+            function onActivated() : boolean {
+                rix.launchprocess( "control", "timedate.cpl" );
+                return false;
+            }
+            ]]></event-handler><event-handler name="Deactivate" function-name="onDeactivated">
+            function onDeactivated() : void {
+            }
+        </event-handler><event-handler name="Validate" function-name="onValidate">
+            function onValidate() : boolean {
+                return true;
+            }
+        </event-handler></page-template>
+  <page-template id="select-kiosk-page" allow-move-next="true" allow-move-back="true" allow-cancel="true" title="Select Kiosk Type" proceed-text="To continue, click Next."><event-handler name="Activate" function-name="onActivated"><![CDATA[
+            function onActivated() : boolean {
+				page.informationBox.Text = "Please select a kiosk type:"
+				if (page.R630RadioButton.Checked || page.R504RadioButton.Checked) {
+					page.errorProvider.SetError( page.R630RadioButton, '' );
+					page.errorProvider.SetError( page.R504RadioButton, '' );
+				}
+				page.R630RadioButton.Checked = true;
+				return false;
+            }
+            ]]></event-handler><event-handler name="Deactivate" function-name="onDeactivated"><![CDATA[
+            function onDeactivated() : void {
+				var value = "";
+				if (page.R630RadioButton.Checked) {	value = "90" }
+				if (page.R504RadioButton.Checked) {	value = "72" }
+				var ignoreMaxSlots = rix.macros["ignoreMaxSlots"];
+				if ( String.IsNullOrEmpty( ignoreMaxSlots ) || String.Compare( ignoreMaxSlots, "undefined" ) == 0 ){
+					rix.SetLocalMachineRegistry("SOFTWARE\\Redbox\\REDS\\Kiosk Engine\\Store","MaxSlots", value);
+				}
+            }
+            ]]></event-handler><event-handler name="Validate" function-name="onValidate"><![CDATA[
+			function onValidate() : boolean {
+				if (!page.R630RadioButton.Checked && !page.R504RadioButton.Checked) {
+					page.errorProvider.SetError( page.R630RadioButton, 'Please specify a kiosk type.' );
+					page.errorProvider.SetError( page.R504RadioButton, 'Please specify a kiosk type.' );
+					System.Windows.Forms.MessageBox.Show('Please specify a kiosk type.');
+					return false;
+				}
+				page.errorProvider.SetError( page.R630RadioButton, '' );
+				page.errorProvider.SetError( page.R504RadioButton, '' );
+                return true;
+            }
+            ]]></event-handler><element Name="errorProvider" Type="System.Windows.Forms.ErrorProvider" /><element Name="layoutPanel" ColumnCount="2" Dock="Fill" Location="0,0" Size="286,256" RowCount="5" TabIndex="0" Type="System.Windows.Forms.TableLayoutPanel"><element UseConstructor="true" SizeType="Percent" Width="100" Type="System.Windows.Forms.ColumnStyle" Add-Target="ColumnStyles" /><element UseConstructor="true" SizeType="Absolute" Width="400" Type="System.Windows.Forms.ColumnStyle" Add-Target="ColumnStyles" /><element UseConstructor="true" SizeType="Absolute" Height="49" Type="System.Windows.Forms.RowStyle" Add-Target="RowStyles" /><element UseConstructor="true" Type="System.Windows.Forms.RowStyle" Add-Target="RowStyles" /><element UseConstructor="true" Type="System.Windows.Forms.RowStyle" Add-Target="RowStyles" /><element UseConstructor="true" Type="System.Windows.Forms.RowStyle" Add-Target="RowStyles" /><element UseConstructor="true" SizeType="Absolute" Height="8" Type="System.Windows.Forms.RowStyle" Add-Target="RowStyles" /><element UseConstructor="true" SizeType="Absolute" Height="20" Type="System.Windows.Forms.RowStyle" Add-Target="RowStyles" /><element Name="R504RadioButton" Location="200,60" Size="300,40" TabIndex="1" Text="R504  -  72 per deck, wide slot machines" UseVisualStyleBackColor="true" Type="System.Windows.Forms.RadioButton" Add-Target="Controls" Add-Column="1" Add-Row="4" /><element Name="R630RadioButton" Location="200,60" Size="300,40" TabIndex="2" Text="R630  -  90 slots per deck and VMZ machines" UseVisualStyleBackColor="true" Type="System.Windows.Forms.RadioButton" Add-Target="Controls" Add-Column="1" Add-Row="3" /><element Name="informationBox" Dock="Fill" Location="3,52" Size="209,51" Type="Divelements.WizardFramework.InformationBox" Add-Target="Controls" Add-Column="0" Add-Row="1" /></element></page-template>
+  <!-- Installers (the original's: Kaseya, McAfee, the XP patches, AuditPol, .NET 4.7.2, nxlog, NAnt, core.zip, KioskAdmin, Blink, DigiCert are gone) -->
+  <file id="dotnet-core-22-installer" source-path="installers\dotnet-runtime-2.2.1-win-x86.exe" destination-path="${REDS}\Installers" compression="none" />
+  <file id="aspnet-core-22-installer" source-path="installers\aspnetcore-runtime-2.2.1-win-x86.exe" destination-path="${REDS}\Installers" compression="none" />
+  <file id="ingenico-314-installer" optional="true" source-path="installers\IngenicoUSBDrivers_3.14_setup.exe" destination-path="${REDS}\Installers" compression="none" />
+  <file id="shell-background-id" optional="true" source-path="installers\background.bmp" destination-path="${REDS}\Installers" compression="none" />
+  <file id="lock-screen-wallpaper-id" optional="true" source-path="installers\backgrounddefault.jpg" destination-path="${REDS}\Installers" compression="none" />
+  <file id="redbox-shell-zip-id" source-path="installers\kioskshell.zip" destination-path="${REDS}\Installers" compression="none" />
+  <file id="rb-reprovision" source-path="installers\rb-reprovision.exe" destination-path="${REDS}\Installers\rb-reprovision" compression="none" />
+  <file id="rb-reprovision-config" source-path="installers\rb-reprovision.exe.config" destination-path="${REDS}\Installers\rb-reprovision" compression="none" />
+  <!-- The front end and what it needs before the seed's kop-update-manager is activated -->
+  <file id="lua51-id" source-path="update-manager\lua51.dll" destination-path="${UpdateManagerTarget}" compression="none" />
+  <file id="storeupdater-id" source-path="update-manager\installer-front-end.exe" destination-path="${UpdateManagerTarget}" compression="none" />
+  <file id="storeupdaterconfig-id" source-path="update-manager\installer-front-end.exe.config" destination-path="${UpdateManagerTarget}" compression="none" />
+  <file id="log4netconfig-id" source-path="update-manager\installer-front-end-log4net.config" destination-path="${UpdateManagerTarget}" compression="none" />
+  <file id="xdelta3-id" source-path="update-manager\xdelta3.exe" destination-path="${UpdateManagerTarget}" compression="none" />
+  <file id="quartz" source-path="update-manager\Quartz.dll" destination-path="${UpdateManagerTarget}" compression="none" />
+  <file id="common-logging" optional="true" source-path="update-manager\Common.Logging.dll" destination-path="${UpdateManagerTarget}" compression="none" />
+  <file id="common-logging-core" optional="true" source-path="update-manager\Common.Logging.Core.dll" destination-path="${UpdateManagerTarget}" compression="none" />
+  <!-- The scripts the front end runs (scripts\ of the fork; installer-heading.lua is written by the build) -->
+  <file id="header" source-path="scripts\installer-heading.lua" destination-path="${UpdateManagerTarget}\..\scripts\" compression="none" />
+  <file id="post-install" source-path="scripts\post-install.lua" destination-path="${UpdateManagerTarget}\..\scripts\" compression="none" />
+  <file id="installer-steps" source-path="scripts\installer-steps.lua" destination-path="${UpdateManagerTarget}\..\scripts\" compression="none" />
+  <file id="installer-utils" source-path="scripts\installer-utils.lua" destination-path="${UpdateManagerTarget}\..\scripts\" compression="none" />
+  <file id="set-kiosk-shell" source-path="scripts\set-kiosk-shell.ps1" destination-path="${UpdateManagerTarget}\..\scripts\" compression="none" />
+  <file id="retarget-netfx2" source-path="scripts\retarget-netfx2.ps1" destination-path="${UpdateManagerTarget}\..\scripts\" compression="none" />
+</rix>

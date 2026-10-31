@@ -1,0 +1,70 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Redbox's RIX setup host ("Redbox Installer from XML Setup Host" 2.0.0.69), built for .NET Framework 4.8.
+
+    The decompiled source stays where it is (software/src/Installer/host); this project compiles it with the files in
+    this folder in place of the ones they replace:
+      VsaScriptingHost.cs     the JScript.NET page scripts are compiled with jsc (CodeDom) instead of the
+                              .NET 2 Microsoft.Vsa engine, which does not exist on .NET 4 ([I001] on start-up)
+      Program.cs              no ".NET 3.5 Framework" check
+      ScriptKernelObject.cs   rix.SetLocalMachineRegistry writes the 32-bit registry view the x86 engine reads
+    Build with -p:ILRepack=true for a single host.exe (bin\...\merged\), which rixc turns into a setup exe.
+  -->
+  <PropertyGroup>
+    <SoftwareDir>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\..\software\'))</SoftwareDir>
+    <OriginalHost>$(SoftwareDir)src\Installer\host\</OriginalHost>
+    <AssemblyName>host</AssemblyName>
+    <RootNamespace>Redbox.Installer.Host</RootNamespace>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWindowsForms>True</UseWindowsForms>
+    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+    <ApplicationIcon>$(OriginalHost)app.ico</ApplicationIcon>
+    <ApplicationManifest>$(OriginalHost)app.manifest</ApplicationManifest>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Deterministic>true</Deterministic>
+    <NoWarn>$(NoWarn);CS0067;CS0108;CS0114;CS0162;CS0168;CS0169;CS0219;CS0414;CS0618;CS0649;CS0659;CS0660;CS0661;CS1998;CS8981;NU1603;NU1701;MSB3270</NoWarn>
+    <ILRepackAssemblies>ICSharpCode.SharpZipLib;SevenZip;SmartPropertyGrid;IconLib</ILRepackAssemblies>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(OriginalHost)**\*.cs"
+             Exclude="$(OriginalHost)bin\**;$(OriginalHost)obj\**;$(OriginalHost)Redbox.ScriptingHost.Framework\VsaScriptingHost.cs;$(OriginalHost)Redbox.Installer.Host\Program.cs;$(OriginalHost)Redbox.Installer.Framework\ScriptKernelObject.cs" />
+    <Compile Include="*.cs" />
+    <EmbeddedResource Include="$(OriginalHost)Redbox.Core.ErrorForm.resx" LogicalName="Redbox.Core.ErrorForm.resources" />
+    <EmbeddedResource Include="$(OriginalHost)Redbox.Installer.Host.MainForm.resx" LogicalName="Redbox.Installer.Host.MainForm.resources" />
+    <EmbeddedResource Include="$(OriginalHost)Redbox.Installer.Host.Properties.Resources.resx" LogicalName="Redbox.Installer.Host.Properties.Resources.resources" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="Microsoft.JScript" />
+    <Reference Include="System.Configuration.Install" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Data.Linq" />
+    <Reference Include="System.Design" />
+    <Reference Include="System.DirectoryServices" />
+    <Reference Include="System.DirectoryServices.AccountManagement" />
+    <Reference Include="System.Messaging" />
+    <Reference Include="System.ServiceProcess" />
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Xml" />
+    <Reference Include="ICSharpCode.SharpZipLib" HintPath="$(SoftwareDir)lib\SharpZipLib\0.85.5\ICSharpCode.SharpZipLib.dll" />
+    <Reference Include="SevenZip" HintPath="$(SoftwareDir)lib\SevenZip\SevenZip.dll" />
+    <Reference Include="SmartPropertyGrid" HintPath="$(SoftwareDir)lib\SmartPropertyGrid\SmartPropertyGrid.dll" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Divelements.WizardFramework" Version="1.2.22" />
+    <PackageReference Include="IconLib" Version="0.74.3" />
+  </ItemGroup>
+  <!-- Divelements.WizardFramework keeps its images as pre-serialized resources (System.Resources.Extensions), which
+       ILRepack breaks: these are embedded unchanged as lib.<name>.dll and loaded by Program.ResolveAssembly. -->
+  <Target Name="EmbedUnmergedLibraries" AfterTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <_EmbedLibrary Include="@(ReferenceCopyLocalPaths)" Condition="'%(Extension)' == '.dll' and ('%(Filename)' == 'Divelements.WizardFramework' or '%(Filename)' == 'System.Resources.Extensions' or '%(Filename)' == 'System.Memory' or '%(Filename)' == 'System.Buffers' or '%(Filename)' == 'System.Numerics.Vectors' or '%(Filename)' == 'System.Runtime.CompilerServices.Unsafe')" />
+      <EmbeddedResource Include="@(_EmbedLibrary)" LogicalName="lib.%(Filename).dll" WithCulture="false" Type="Non-Resx" />
+    </ItemGroup>
+  </Target>
+  <Import Project="$(SoftwareDir)build\ILRepack.targets" />
+</Project>
