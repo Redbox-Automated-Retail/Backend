@@ -25,6 +25,7 @@ flowchart LR
 .\build\release.ps1 -Component kioskclient -Version 1.0.208.0
 .\build\release.ps1 -Tag kioskclient/v1.0.208.0              # what CI does
 .\build\release.ps1 -Component kioskclient -Version 1.0.208.0 -RestoreSources D:\nuget-feed   # offline feed
+.\build\release.ps1 -Component kop-v2-engine -Version 1.88.1.0 -Property RedboxEngine181Refs=D:\refs-engine-1.81
 ```
 
 It needs Windows with Visual Studio 2022 or later (or Build Tools) and the .NET desktop workload (full MSBuild:
@@ -277,7 +278,24 @@ rollouts with fresh-kiosk snapshots, rollback by revert (old content, verified) 
 releasing and folding in narrower rollouts, file-set releases, and the token API (no token, wrong scope, forged,
 duplicate version, cookie routes refuse tokens).
 
-**Builds** (this PC: Visual Studio 18 MSBuild, .NET SDKs 2.1-10, packages from nuget.org): see the table below.
+**Builds** (this PC: Visual Studio 18 MSBuild, .NET SDKs 2.1-10, .NET Framework 3.5, packages from nuget.org), every
+component of components.json with `release.ps1 -Version 9.0.0.1`:
+
+| Component | Result | Staged files |
+|---|---|---|
+| kioskclient, kioskclient-fileset | builds | 42 (43 before web.config was dropped) |
+| updateclient | builds | 67 |
+| device-service | builds | 65 |
+| kop-update-manager | builds, ILRepack-merged updatemgrd / update-console / updatemgr-ui | 36 |
+| kop-v2-engine | builds **only with** `-Property RedboxEngine181Refs=<folder>`: Redbox.KioskServices.Kernel, .KernelExtension and .Proxy compile against the engine 1.81.0.27 assemblies, which are not in the repository (Software `src/KioskServices/Engine181.targets`, `tools/history/export_release.py`) | 303 (most are dependencies the repository does not have; ignored on publish) |
+| kop-hal-install | builds (net35) | 33 |
+| kop-ms-hal-tester | builds | 12 |
+| kop-tools | builds | 13 |
+
+Only `kioskclient` was published and run on a kiosk. The others were built but not published: whether each
+rebuilt file behaves like Redbox's is the decompilation's question (Software `docs/decompilation.md`), not the
+pipeline's. On GitHub's runners the engine cannot build until the 1.81 reference assemblies are provided to CI
+(for example as a private artifact); everything else needs only nuget.org.
 
 Observed differences of a rebuild against Redbox's shipped `kioskclient`: `runtimeconfig.json` names framework
 2.2.0 where Redbox's says 2.2.1 (the host rolls forward to the newest 2.2.x installed) and gains two
