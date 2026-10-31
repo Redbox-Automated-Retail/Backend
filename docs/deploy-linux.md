@@ -248,14 +248,16 @@ sudo usermod -aG docker "$USER"  # optional; log out and in again
 
 (Debian 12: use `https://download.docker.com/linux/debian` in both URLs.)
 
-### 5.3 Get the code (two private repositories)
+### 5.3 Get the code (three private repositories)
 
-A GitHub deploy key only opens one repository. Give the server one read-only key per repository, plus an SSH
-alias for each:
+The Backend has two submodules: `software/` (the Software repository) and `vendor/vistadb3-py` (vistadb3, the
+VistaDB 3.5 reader/writer the catalog uses; private for now). A GitHub deploy key only opens one repository. Give
+the server one read-only key per repository, plus an SSH alias for each:
 
 ```sh
 ssh-keygen -t ed25519 -N '' -f ~/.ssh/redbox_backend  -C "redbox server: Backend"
 ssh-keygen -t ed25519 -N '' -f ~/.ssh/redbox_software -C "redbox server: Software"
+ssh-keygen -t ed25519 -N '' -f ~/.ssh/redbox_vistadb3 -C "redbox server: vistadb3"
 cat >> ~/.ssh/config <<'EOF'
 Host github-redbox-backend
   HostName github.com
@@ -267,8 +269,13 @@ Host github-redbox-software
   User git
   IdentityFile ~/.ssh/redbox_software
   IdentitiesOnly yes
+Host github-redbox-vistadb3
+  HostName github.com
+  User git
+  IdentityFile ~/.ssh/redbox_vistadb3
+  IdentitiesOnly yes
 EOF
-cat ~/.ssh/redbox_backend.pub ~/.ssh/redbox_software.pub
+cat ~/.ssh/redbox_backend.pub ~/.ssh/redbox_software.pub ~/.ssh/redbox_vistadb3.pub
 ```
 
 Add each public key as a **read-only deploy key** on its repository (repository Settings, then Deploy keys). Then:
@@ -278,16 +285,20 @@ sudo mkdir -p /opt/redbox /srv/redbox/packages && sudo chown "$USER" /opt/redbox
 cd /opt/redbox
 git clone git@github-redbox-backend:Redbox-Automated-Retail/Backend.git
 cd Backend
-# .gitmodules says git@github.com:...; send that URL through the Software key instead
+# .gitmodules says git@github.com:...; send those URLs through the right keys instead
 git config url."git@github-redbox-software:Redbox-Automated-Retail/Software.git".insteadOf \
                "git@github.com:Redbox-Automated-Retail/Software.git"
+git config url."git@github-redbox-vistadb3:Puyodead1/vistadb3-py.git".insteadOf \
+               "git@github.com:Puyodead1/vistadb3-py.git"
 git submodule update --init
 ```
 
-The submodule is not optional:
+The submodules are not optional:
 - the `rb-remoting` image is compiled from `software/src` and `software/lib`;
 - `rb-cloudapi` mounts `software/src/UpdateClient/.../Security` at run time for the Update Client's passphrase
-  (README, Secrets).
+  (README, Secrets);
+- the `redbox-backend` image copies `vendor/vistadb3-py/src/vistadb3`; without it the catalog (5.8) cannot read or
+  write `profile.data`.
 
 ### 5.4 `.env`
 
@@ -408,10 +419,31 @@ docker compose exec -T rb-iot python -m redbox_backend admin repos       # repos
 - **The zips stay in `PACKAGES_DIR`** only as the import source; the imported content lives in the `rb-data`
   volume.
 
-**What importing does not do.** It does not fill the dashboard's **Catalog** page (the backend's own
-`cloud_products` table). Kiosks browse and rent from their local `profile.data`, so they don't need it. The
-backend's catalog only feeds the cloud calls that look titles up (`api/product/bytitleids`, Product Reels).
-Barcodes are mapped to titles from the transactions kiosks report, as they happen.
+Importing the seeds does not fill the dashboard's **Catalog** page; 5.8 does that, from the `dvd-data` just
+imported.
+
+### 5.8 Import the catalog
+
+The catalog is what kiosks rent from: `profile.data` (titles, product groups, markets, stores, box art) and
+`inventory.data` (about 26 million barcode to title records). Kiosks read both locally, from `dvd-data`. Importing
+them into the backend lets you browse and edit them on the dashboard's **Catalog** page, and publish the result back
+to kiosks as a new `dvd-data` revision. It also fills `cloud_products` and `cloud_barcodes`, which the cloud APIs
+answer title and barcode questions from. docs/catalog.md has the details.
+
+After 5.7, on the dashboard: **Catalog**, then **Import & publish**, then **Import** (the default source is the
+`dvd-data` revision served to kiosks). Or with the CLI:
+
+```sh
+docker compose exec -T rb-iot python -m redbox_backend admin catalog-import     # served dvd-data head
+docker compose exec -T rb-iot python -m redbox_backend admin catalog-status
+```
+
+- It takes about 3 minutes and adds about 3.5 GB to the database: the barcodes are 3 GB with their indexes. The
+  box art goes into the `rb-data` volume (about 300 MB).
+- `cloud_barcodes` is locked while the barcodes load, so cloud calls that look barcodes up wait for it. Import
+  when the kiosks are quiet.
+- Importing again replaces the catalog. Barcodes added on the dashboard and barcodes learned from kiosk
+  transactions are kept.
 
 ## 6. nginx (reverse proxy)
 
@@ -791,6 +823,16 @@ docker compose exec -T rb-iot python -m redbox_backend admin stores
   docker compose run --rm -v /srv/redbox/packages:/in:ro rb-iot python -m redbox_backend admin import-store /in
   ```
 
+- **Catalog changes** (new titles, box art, barcodes) are made on the dashboard's **Catalog** page. Kiosks get them
+  when they are published (**Import & publish**: every kiosk, one market or one kiosk), on their next Update
+  Service poll. Publishing builds both files (about 2 minutes) and sends kiosks deltas, a few MB.
+  `OMDB_API_KEY` in `.env` turns on looking new titles up on OMDb. The same from the CLI:
+
+  ```sh
+  docker compose exec -T rb-iot python -m redbox_backend admin catalog-titles "title words"
+  docker compose exec -T rb-iot python -m redbox_backend admin catalog-publish --market "Denver, CO"
+  ```
+
 - **The dashboard without Cloudflare**, for large uploads (over 100 MB) or when Access is in the way:
 
   ```sh
@@ -827,8 +869,9 @@ cp .env "$B/env"
 
 - **`rb-data`** holds the imported update content (tens of GB). It can be rebuilt by importing the seeds again,
   so back it up less often if space is short.
-- **`rb-certs` and the database** are small. Back them up daily (a cron job running the lines above) and copy them
-  off the server.
+- **`rb-certs` and the database** are small (an imported catalog's 26 million barcodes add about 100 MB to the
+  compressed dump). Back them up daily (a cron job running the lines above) and copy them off the
+  server. Catalog edits not yet published exist only in the database.
 
 To restore onto a fresh server, after 5.1-5.4 and before the first `up`:
 
@@ -849,7 +892,7 @@ docker compose up -d
 ```sh
 cd /opt/redbox/Backend
 git pull
-git submodule update --init       # the pinned Software commit may have moved
+git submodule update --init       # the pinned Software and vistadb3 commits may have moved
 docker compose build
 docker compose up -d              # recreates what changed; the schema is applied at start-up
 docker image prune -f

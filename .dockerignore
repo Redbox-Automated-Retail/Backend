@@ -11,3 +11,5 @@ software/*
 !software/lib/GenuineChannels/GenuineChannels.dll
 software/**/bin
 software/**/obj
+vendor/*/tests
+vendor/*/oracle

@@ -248,7 +248,8 @@ switch ($Command) {
         }
         $envs = Env-Args
         W run --rm --network $Network -v "$($Volumes.data):/data" -v "$($Volumes.certs):/certs" -v "${Backend}:/app:ro" @ucs @envs `
-            -e CLOUDAPI_URL=https://rb-cloudapi -e UPDATESVC_HOST=rb-updatesvc -e IOT_HOST=rb-iot -e PYTHONDONTWRITEBYTECODE=1 $Image `
+            -e CLOUDAPI_URL=https://rb-cloudapi -e UPDATESVC_HOST=rb-updatesvc -e IOT_HOST=rb-iot -e PYTHONDONTWRITEBYTECODE=1 `
+            -e PYTHONPATH=/app/vendor/vistadb3-py/src $Image `
             sh -c "pip install -q pytest httpx >/dev/null 2>&1; cd /app && python -m pytest -p no:cacheprovider -q -s $($sel -join ' ')"
     }
     default {

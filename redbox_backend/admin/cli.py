@@ -14,9 +14,10 @@ Update Service (legacy updatemgrd):
   publish <repo> <dir> --target-path 'C:\\Program Files\\...' [--label L]
                                      add a revision from a local directory (deltas via xdelta3)
   build-seed <out.zip> [--repo NAME[@REV] ... | --all] [--edition NAME] [--add REPO DIR TARGET_PATH ...]
-             [--label REPO=LABEL ...] [--no-deltas] [--retarget OLD=NEW ...] [--date MMDDYYYY]
+             [--label REPO=LABEL ...] [--no-deltas] [--retarget OLD=NEW ...] [--date MMDDYYYY] [--catalog]
                                      write an installer seed (data-<MMDDYYYY>.zip) of repositories at chosen
-                                     revisions plus new content; format in docs/seed-zips.md
+                                     revisions plus new content (--catalog: the catalog, built now, as a
+                                     dvd-data revision); format in docs/seed-zips.md
   check-seed <zip> [--compare REFERENCE.zip] [--no-apply]
                                      check a seed as updatemgrd would use it (any seed, real or built)
   repos                              list repositories and heads
@@ -39,6 +40,31 @@ Releases of our own builds (docs/releases.md):
   fileset-status <fs> [--json]       file-set revisions, deployments and kiosk states
   api-token create <name> [--scope publish|deploy ...] | list | revoke <name>
                                      bearer tokens for the CI API (/api/ci/* on the dashboard)
+
+Catalog (profile.data / inventory.data, docs/catalog.md):
+  catalog-import [--repo dvd-data [--revision R] | --folder DIR]
+                                     replace the catalog with the served dvd-data head (default) or a folder
+                                     holding profile.data and inventory.data
+  catalog-status                     what is imported and changed since
+  catalog-titles [QUERY] [--limit N] search titles (name or product id)
+  catalog-show <product id>          a title with its groups and barcode count
+  catalog-title-add --type T (--omdb TITLE [--year Y] | --imdb ID | --set long_name=...) [--set K=V ...]
+                    [--image FILE|URL] [--barcode B ...] [--group-with PRODUCT_ID]
+                                     new title (next product id; OMDb needs OMDB_API_KEY); T = ProductType id
+                                     (1 DVD, 2 Blu-ray, 19 4K UHD); V is JSON or text (genres=[1000,1004])
+  catalog-title-set <product id> [K=V ...] [--image FILE|URL]
+  catalog-title-delete <product id> [--barcodes]
+  catalog-group-set [GROUP] --titles ID,ID.. [--name N] [--type 1|3|6]
+                                     product group: 1 title rollup, 3 multi-disc, 6 multi-disc workaround
+  catalog-group-delete <group>
+  catalog-barcode-set <barcode> <product id> [--status N]
+  catalog-barcode-delete <barcode>
+  catalog-row <table> <key> [--set LUA|@file | --delete]
+                                     show / replace / delete any profile.data row (Store, Market, ...)
+  catalog-build <dir>                write profile.data and inventory.data from the catalog
+  catalog-publish [--market M | --kiosk K] [--label L]
+                                     build and publish a dvd-data revision; served to every kiosk, or rolled
+                                     out to one market / kiosk only
 
 File sets (Update Client and updatemgrd):
   fileset-create <id> <name> <version> <dir> --dest 'C:\\...' [--dep FS:MIN[:MAX]]
@@ -327,12 +353,25 @@ async def cmd_build_seed(args):
     out = pathlib.Path(args.out)
     if out.is_dir():
         out = out / seedzip.default_name(when.date() if when else None)
+    retarget = [r.split("=", 1) for r in args.retarget or []]
+    work = None
     try:
-        summary = await seedzip.build(out, specs, additions, when=when, retarget=[r.split("=", 1) for r in args.retarget or []],
+        if args.catalog:
+            # the catalog as it is now, as a dvd-data revision on top of the repository's history
+            from ..catalog import publish, store
+            work = publish.work_dir()
+            files, _ = await publish.build_for_seed(work, progress=_print)
+            additions.append((store.REPO, [(seedzip._retarget(tp, retarget), tn, p) for tp, tn, p in files],
+                              labels.get(store.REPO) or "catalog-" + dt.datetime.now().strftime("%Y%m%d-%H%M")))
+        summary = await seedzip.build(out, specs, additions, when=when, retarget=retarget,
                                       deltas=not args.no_deltas, allow_placeholders=args.allow_placeholders,
                                       progress=lambda m: print(m, file=sys.stderr, flush=True))
     except seedzip.SeedError as e:
         sys.exit(str(e))
+    finally:
+        if work:
+            import shutil
+            shutil.rmtree(work, ignore_errors=True)
     print(json.dumps(summary, indent=2))
 
 
@@ -431,6 +470,155 @@ async def cmd_api_token(args):
         print(f"revoked {await apitokens.revoke(args.name)} token(s)")
 
 
+async def _progress(msg):
+    print(msg, file=sys.stderr, flush=True)
+
+
+async def cmd_catalog_import(args):
+    from ..catalog import store
+    if args.folder:
+        res = await store.import_folder(args.folder, progress=_progress)
+    else:
+        res = await store.import_repository(args.repo, args.revision, progress=_progress)
+    print(json.dumps(res, indent=2, default=str))
+
+
+async def cmd_catalog_status(args):
+    st = await db.fetchrow("SELECT source, imported_at, changed_at, stamped_at, page_size, lcid, case_sensitive,"
+                           " last_build FROM catalog_state WHERE id=1")
+    counts = await db.fetch("SELECT tbl, count(*) AS n FROM catalog_rows GROUP BY tbl ORDER BY tbl")
+    print(json.dumps({"state": st, "rows": {r["tbl"]: r["n"] for r in counts},
+                      "images": await db.fetchval("SELECT count(*) FROM catalog_images"),
+                      "barcodes": {r["source"]: r["n"] for r in await db.fetch(
+                          "SELECT source, count(*) AS n FROM cloud_barcodes GROUP BY source")}}, indent=2, default=str))
+
+
+async def cmd_catalog_build(args):
+    from ..catalog import store
+    print(json.dumps(await store.build(args.dir, progress=_progress), indent=2))
+
+
+def _kv(pairs):
+    out = {}
+    for p in pairs or []:
+        if "=" not in p:
+            raise SystemExit(f"expected KEY=VALUE, got {p!r}")
+        k, v = p.split("=", 1)
+        try:
+            out[k.strip()] = json.loads(v)
+        except json.JSONDecodeError:
+            out[k.strip()] = v
+    return out
+
+
+async def _image(src):
+    from ..catalog import edit
+    if src.startswith(("http://", "https://")):
+        return await edit.fetch_image(src)
+    return pathlib.Path(src).read_bytes()
+
+
+def _dump(v):
+    print(json.dumps(v, indent=2, default=str))
+
+
+async def cmd_catalog_titles(args):
+    from ..catalog import edit
+    res = await edit.search_titles(args.query, limit=args.limit)
+    for r in res["rows"]:
+        print(f"{r['product_id']:>8}  type {r['product_type_id'] or '?':>2}  {(r['release_date'] or '')[:4]:4}  {r['long_name']}")
+    print(f"{res['total']} titles", file=sys.stderr)
+
+
+async def cmd_catalog_show(args):
+    from ..catalog import edit
+    row = await edit.get_row(edit.TITLES, args.product_id)
+    if row is None:
+        sys.exit(f"no title {args.product_id}")
+    _dump({"lua": row["lua"], "value": row["value"], "groups": await edit.groups_of(args.product_id),
+           "barcodes": await db.fetchval("SELECT count(*) FROM cloud_barcodes WHERE product_id=%s", int(args.product_id))})
+
+
+async def cmd_catalog_title_add(args):
+    from ..catalog import edit
+    fields, poster = {}, None
+    if args.omdb or args.imdb:
+        found = await edit.omdb_lookup(args.omdb, args.year, args.imdb)
+        fields, poster = found["fields"], found["poster"]
+        print(f"OMDb: {found['omdb'].get('Title')} ({found['omdb'].get('Year')}) {found['omdb'].get('imdbID')}",
+              file=sys.stderr)
+    fields.update(_kv(args.set), product_type_id=args.type)
+    if args.type == 2 and "sort_name" not in _kv(args.set):
+        fields["sort_name"] = (fields.get("sort_name") or fields.get("long_name") or "") + " (Blu-ray)"
+    pid = await edit.save_title(fields)
+    image = args.image or poster
+    if image:
+        print(f"box art {await edit.put_image(await _image(image), pid)}", file=sys.stderr)
+    for b in args.barcode or []:
+        await edit.set_barcode(b, pid)
+    if args.group_with:
+        groups = [g for g in await edit.groups_of(args.group_with) if g["value"].get("product_group_type_id") == 1]
+        if groups:
+            g = groups[0]
+            await edit.save_group(g["product_group_id"], None, 1, g["value"]["product_id_list"] + [pid])
+        else:
+            await edit.save_group(None, fields.get("long_name"), 1, [int(args.group_with), pid])
+    print(pid)
+
+
+async def cmd_catalog_title_set(args):
+    from ..catalog import edit
+    if args.set:
+        await edit.save_title(_kv(args.set), args.product_id)
+    if args.image:
+        print(f"box art {await edit.put_image(await _image(args.image), args.product_id)}", file=sys.stderr)
+    print((await edit.get_row(edit.TITLES, args.product_id))["lua"])
+
+
+async def cmd_catalog_title_delete(args):
+    from ..catalog import edit
+    _dump(await edit.delete_title(args.product_id, barcodes=args.barcodes))
+
+
+async def cmd_catalog_group_set(args):
+    from ..catalog import edit
+    ids = [int(x) for x in args.titles.split(",") if x.strip()]
+    print(await edit.save_group(args.group, args.name, args.type, ids))
+
+
+async def cmd_catalog_group_delete(args):
+    from ..catalog import edit
+    await edit.delete_group(args.group)
+
+
+async def cmd_catalog_barcode_set(args):
+    from ..catalog import edit
+    _dump(await edit.set_barcode(args.barcode, args.product_id, args.status))
+
+
+async def cmd_catalog_barcode_delete(args):
+    from ..catalog import edit
+    print(await edit.delete_barcode(args.barcode))
+
+
+async def cmd_catalog_row(args):
+    from ..catalog import edit
+    if args.delete:
+        print(await edit.delete_row(args.table, args.key))
+        return
+    if args.set:
+        text = pathlib.Path(args.set[1:]).read_text(encoding="utf-8") if args.set.startswith("@") else args.set
+        await edit.put_row(args.table, args.key, text=text.strip())
+    row = await edit.get_row(args.table, args.key)
+    print(row["lua"] if row else f"no row {args.key} in {args.table}")
+
+
+async def cmd_catalog_publish(args):
+    from ..catalog import publish
+    scope, target = ("store", args.kiosk) if args.kiosk else ("market", args.market) if args.market else ("all", None)
+    _dump(await publish.publish(scope, target, label=args.label, progress=_progress, actor="admin-cli"))
+
+
 async def cmd_kiosk_profile(args):
     if not args.address and not args.base_domain:
         sys.exit("give --address (hosts-file mapping of the Redbox names) or --base-domain (your own DNS names)")
@@ -464,7 +652,9 @@ def parser():
     p.add_argument("--label", action="append", help="REPO=LABEL for the revision --add creates")
     p.add_argument("--no-deltas", action="store_true"); p.add_argument("--retarget", action="append")
     p.add_argument("--date", help="MMDDYYYY: entry timestamps and default file name (default now)")
-    p.add_argument("--allow-placeholders", action="store_true"); p.set_defaults(fn=cmd_build_seed)
+    p.add_argument("--allow-placeholders", action="store_true")
+    p.add_argument("--catalog", action="store_true", help="add the catalog as built now as a dvd-data revision")
+    p.set_defaults(fn=cmd_build_seed)
     p = sub.add_parser("check-seed"); p.add_argument("zip"); p.add_argument("--compare")
     p.add_argument("--no-apply", action="store_true"); p.set_defaults(fn=cmd_check_seed)
     sub.add_parser("repos").set_defaults(fn=cmd_repos)
@@ -498,6 +688,33 @@ def parser():
     p = sub.add_parser("api-token"); p.add_argument("action", choices=["create", "list", "revoke"])
     p.add_argument("name", nargs="?"); p.add_argument("--scope", action="append", choices=list(apitokens.SCOPES))
     p.set_defaults(fn=cmd_api_token)
+    p = sub.add_parser("catalog-import"); p.add_argument("--repo", default="dvd-data"); p.add_argument("--revision")
+    p.add_argument("--folder"); p.set_defaults(fn=cmd_catalog_import)
+    sub.add_parser("catalog-status").set_defaults(fn=cmd_catalog_status)
+    p = sub.add_parser("catalog-build"); p.add_argument("dir"); p.set_defaults(fn=cmd_catalog_build)
+    p = sub.add_parser("catalog-titles"); p.add_argument("query", nargs="?"); p.add_argument("--limit", type=int, default=50)
+    p.set_defaults(fn=cmd_catalog_titles)
+    p = sub.add_parser("catalog-show"); p.add_argument("product_id", type=int); p.set_defaults(fn=cmd_catalog_show)
+    p = sub.add_parser("catalog-title-add"); p.add_argument("--type", type=int, required=True)
+    p.add_argument("--omdb"); p.add_argument("--year"); p.add_argument("--imdb"); p.add_argument("--set", action="append")
+    p.add_argument("--image"); p.add_argument("--barcode", action="append"); p.add_argument("--group-with", type=int)
+    p.set_defaults(fn=cmd_catalog_title_add)
+    p = sub.add_parser("catalog-title-set"); p.add_argument("product_id", type=int); p.add_argument("set", nargs="*")
+    p.add_argument("--image"); p.set_defaults(fn=cmd_catalog_title_set)
+    p = sub.add_parser("catalog-title-delete"); p.add_argument("product_id", type=int)
+    p.add_argument("--barcodes", action="store_true", help="also delete the title's barcodes")
+    p.set_defaults(fn=cmd_catalog_title_delete)
+    p = sub.add_parser("catalog-group-set"); p.add_argument("group", type=int, nargs="?")
+    p.add_argument("--titles", required=True); p.add_argument("--name"); p.add_argument("--type", type=int, default=1)
+    p.set_defaults(fn=cmd_catalog_group_set)
+    p = sub.add_parser("catalog-group-delete"); p.add_argument("group", type=int); p.set_defaults(fn=cmd_catalog_group_delete)
+    p = sub.add_parser("catalog-barcode-set"); p.add_argument("barcode"); p.add_argument("product_id", type=int)
+    p.add_argument("--status", type=int, default=0); p.set_defaults(fn=cmd_catalog_barcode_set)
+    p = sub.add_parser("catalog-barcode-delete"); p.add_argument("barcode"); p.set_defaults(fn=cmd_catalog_barcode_delete)
+    p = sub.add_parser("catalog-row"); p.add_argument("table"); p.add_argument("key"); p.add_argument("--set")
+    p.add_argument("--delete", action="store_true"); p.set_defaults(fn=cmd_catalog_row)
+    p = sub.add_parser("catalog-publish"); p.add_argument("--market"); p.add_argument("--kiosk"); p.add_argument("--label")
+    p.set_defaults(fn=cmd_catalog_publish)
     p = sub.add_parser("fileset-create"); p.add_argument("id", type=int); p.add_argument("name"); p.add_argument("version")
     p.add_argument("dir"); p.add_argument("--dest", required=True); p.add_argument("--dep", action="append")
     p.set_defaults(fn=cmd_fileset_create)

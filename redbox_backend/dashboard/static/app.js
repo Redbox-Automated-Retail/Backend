@@ -338,6 +338,267 @@ routes.pricing = async () => {
   show(tabs[0][0]);
 };
 
+// ---------------------------------------------------------------------------------------- catalog
+// The kiosk catalog (profile.data + inventory.data): edited here, published as a dvd-data revision.
+const CATALOG_TABS = [["titles", "Titles"], ["groups", "Product groups"], ["barcodes", "Barcodes"], ["tables", "Other tables"], ["publish", "Import & publish"]];
+let catalogLookups = null;
+const csv = (s) => String(s || "").split(",").map((x) => x.trim()).filter(Boolean);
+const thumb = (name) => name ? `<img src="/api/catalog/images/${encodeURIComponent(name)}" alt="" loading="lazy" style="height:48px">` : "";
+
+routes.catalog = async (tab = "titles") => {
+  title("Catalog");
+  if (!catalogLookups) catalogLookups = await api("/catalog/lookups");
+  view().innerHTML = `<div class="tabs">${CATALOG_TABS.map(([n, l]) => `<a class="button ${n === tab ? "on" : ""}" href="#/catalog/${n}">${esc(l)}</a>`).join("")}</div><div id="ct"></div>`;
+  await ({ titles: catalogTitles, groups: catalogGroups, barcodes: catalogBarcodes, tables: catalogTables, publish: catalogPublish }[tab] || catalogTitles)($("#ct"));
+};
+
+async function catalogTitles(root) {
+  const q = query();
+  root.innerHTML = `<div class="toolbar"><input id="cq" class="grow" placeholder="Title or product id" value="${esc(q.q || "")}">
+    <button id="cg">Search</button><button class="primary" id="cn">New title</button></div><div id="cl"></div>`;
+  const types = Object.fromEntries(catalogLookups.types.map((t) => [String(t.product_type_id), t.product_type_name]));
+  const load = async () => {
+    const d = await api("/catalog/titles?" + new URLSearchParams({ q: $("#cq").value, limit: "100" }));
+    $("#cl").innerHTML = `<p class="muted">${esc(d.total)} titles${d.total > d.rows.length ? `, newest ${d.rows.length} shown` : ""}. Changes go to kiosks when the catalog is published (Import &amp; publish).</p>` +
+      table(d.rows, [{ key: "image_file", label: "", render: thumb }, { key: "product_id", label: "Product id" }, { key: "long_name", label: "Title", wrap: true },
+        { key: "product_type_id", label: "Type", render: (v) => esc(types[v] || v) }, { key: "release_date", label: "Released", render: (v) => esc((v || "").slice(0, 4)) },
+        { key: "studio", label: "Studio" }], { onclick: true, empty: "No titles. Import a catalog first (Import & publish)." });
+    bindRows($("#cl"), d.rows, (r) => titleDialog(r.product_id, load));
+  };
+  $("#cg").onclick = load; $("#cq").addEventListener("keydown", (e) => e.key === "Enter" && load());
+  $("#cn").onclick = () => titleDialog(null, load);
+  await load();
+}
+
+const TITLE_FIELDS = [["long_name", "Title"], ["sort_name", "Sort name"], ["release_date", "Release date (yyyyMMdd or yyyyMMddHHmmss)"],
+  ["national_street_date", "Street date"], ["running_time", "Running time (h:mm)"], ["studio", "Studio"], ["stars", "Stars"],
+  ["box_office_gross", "Box office (million $)"], ["coming_soon_days", "Coming soon days"], ["sellthru_price", "Sell-thru price"]];
+
+async function titleDialog(pid, reload) {
+  const d = pid ? await api("/catalog/titles/" + pid) : { value: {}, groups: [], barcodes: [], barcode_count: 0 };
+  const v = d.value || {};
+  const L = catalogLookups;
+  const genres = new Set(Object.keys(v.genres || {}).filter((k) => v.genres[k]));
+  const opt = (list, id, name, cur) => list.map((x) => `<option value="${esc(x[id])}" ${String(x[id]) === String(cur) ? "selected" : ""}>${esc(x[id])} ${esc(x[name])}</option>`).join("");
+  const m = modal(`<h3>${pid ? "Title " + esc(pid) : "New title"}</h3>
+    ${pid ? "" : `<form id="om" class="card inline"><b>OMDb</b><input name="title" placeholder="Title" required><input name="year" placeholder="Year" size="5"><input name="imdb_id" placeholder="or IMDb id" size="10">
+      <button>Look up</button><span class="muted">${(await api("/catalog")).omdb ? "fills the form below" : "set OMDB_API_KEY to use this"}</span></form>`}
+    <form id="tf" class="mt"><div class="grid2"><div>
+      ${TITLE_FIELDS.map(([k, l]) => `<label>${esc(l)} <input data-f="${k}" value="${esc(v[k] ?? "")}"></label>`).join("")}
+      <label>Product type <select data-f="product_type_id">${opt(L.types, "product_type_id", "product_type_name", v.product_type_id ?? 1)}</select></label>
+      <label>Rating <select data-f="rating_id">${opt(L.ratings, "rating_id", "name", v.rating_id ?? 10)}</select></label>
+      <label>Starring (comma separated) <input data-f="starring" value="${esc((v.starring || []).join(", "))}"></label>
+      <label>Directors (comma separated) <input data-f="directors" value="${esc((v.directors || []).join(", "))}"></label>
+      <label><input type="checkbox" data-f="closed_captioned" ${v.closed_captioned ? "checked" : ""}> closed captioned</label>
+      <label><input type="checkbox" data-f="sell_thru" ${v.sell_thru ? "checked" : ""}> sell-thru</label>
+    </div><div>
+      <div id="art">${thumb(v.image_file).replace('height:48px', 'height:180px')}</div><p class="muted">${esc(v.image_file || "no box art")}</p>
+      <label>Description <textarea data-f="description" rows="6">${esc(v.description || "")}</textarea></label>
+      <b>Genres</b><div class="genres">${L.genres.map((g) => `<label class="inline"><input type="checkbox" data-g="${esc(g.genre_id)}" ${genres.has(String(g.genre_id)) ? "checked" : ""}> ${esc(g.genre_name)}</label>`).join(" ")}</div>
+    </div></div>
+    <div class="toolbar mt"><button class="primary" type="submit">${pid ? "Save" : "Create"}</button><button type="button" id="cl">Close</button>
+      <span class="grow"></span>${pid ? '<button type="button" class="danger" id="del">Delete title</button>' : ""}</div></form>
+    ${pid ? `<div class="grid2 mt"><form id="imf" class="card"><b>Box art</b><p class="muted">JPEG/PNG; stored in the Cache table under its SHA-1.</p>
+        <label>File <input type="file" name="file" accept="image/*"></label><label>or URL <input name="url"></label><button>Set box art</button></form>
+      <div class="card"><b>Product groups</b>${table(d.groups, [{ key: "product_group_id", label: "Group" }, { key: "value", label: "Name / type / titles", wrap: true,
+        render: (g) => esc(`${g.product_group_name} - type ${g.product_group_type_id} - ${(g.product_id_list || []).join(", ")}`) }], { onclick: true, empty: "In no group." })}
+        <form id="rg" class="inline mt"><input name="other" placeholder="Product id of the other edition" size="14"><button>Roll up with it</button></form></div></div>
+      <div class="card mt"><b>Barcodes (${esc(d.barcode_count)})</b>${table(d.barcodes, [{ key: "barcode" }, { key: "status" }, { key: "rental_count", label: "Rentals" }, { key: "source" },
+        { key: "barcode", label: "", render: (b) => `<button type="button" data-delb="${esc(b)}">Delete</button>` }], { empty: "No barcodes." })}
+        <form id="bf" class="inline mt"><input name="barcode" placeholder="Barcode (digits)" required><button>Add barcode</button></form></div>
+      <details class="mt"><summary>Stored Lua value</summary><textarea id="lua" rows="8" style="width:100%">${esc(d.lua)}</textarea><button type="button" id="savelua">Save Lua</button></details>` : ""}`);
+  $("#cl", m).onclick = closeModal;
+  const done = async (msg, again) => { toast(msg); closeModal(); reload && reload(); if (again) titleDialog(again, reload); };
+  const fill = (fields) => {
+    for (const [k, val] of Object.entries(fields)) {
+      const el = $(`[data-f="${k}"]`, m);
+      if (el && el.type === "checkbox") el.checked = !!val; else if (el) el.value = Array.isArray(val) ? val.join(", ") : (val ?? "");
+    }
+    if (fields.genres) $$("[data-g]", m).forEach((c) => (c.checked = fields.genres.map(String).includes(c.dataset.g)));
+  };
+  let poster = null;
+  if ($("#om", m)) $("#om", m).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const r = await act(() => api("/catalog/omdb", { body: Object.fromEntries(new FormData(e.target)) }), (x) => `OMDb: ${x.omdb.Title} (${x.omdb.Year})`);
+    fill(r.fields); poster = r.poster;
+    if (poster) $("#art", m).innerHTML = `<img src="${esc(poster)}" alt="" style="height:180px"><p class="muted">poster is stored on Create</p>`;
+  });
+  $("#tf", m).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fields = {};
+    $$("[data-f]", m).forEach((el) => {
+      const k = el.dataset.f;
+      let val = el.type === "checkbox" ? el.checked : el.value;
+      if (["starring", "directors"].includes(k)) val = csv(val);
+      else if (["stars", "coming_soon_days", "product_type_id", "rating_id", "box_office_gross"].includes(k)) val = val === "" ? 0 : Number(val);
+      else if (k === "sellthru_price") val = val === "" ? 0 : Number(val);
+      if (pid || val !== "") fields[k] = val;
+    });
+    fields.genres = $$("[data-g]", m).filter((c) => c.checked).map((c) => +c.dataset.g);
+    const r = await act(() => api("/catalog/titles", { body: { product_id: pid, fields } }));
+    if (!pid && poster) {
+      const f = new FormData(); f.append("url", poster);
+      await act(() => api(`/catalog/titles/${r.product_id}/image`, { form: f }));
+    }
+    done(pid ? "Saved" : `Created title ${r.product_id}`, pid ? null : r.product_id);
+  });
+  if (!pid) return;
+  $("#del", m).onclick = async () => {
+    const withBarcodes = d.barcode_count && confirm(`Also delete its ${d.barcode_count} barcodes? (Cancel keeps them)`);
+    if (!confirm(`Delete title ${pid}?`)) return;
+    await act(() => api(`/catalog/titles/${pid}/delete`, { body: { barcodes: !!withBarcodes } }));
+    done("Deleted");
+  };
+  $("#imf", m).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    await act(() => api(`/catalog/titles/${pid}/image`, { form: new FormData(e.target) }), (x) => `Box art ${x.image_file}`);
+    done("Box art set", pid);
+  });
+  $("#rg", m).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const other = +new FormData(e.target).get("other");
+    const rollup = d.groups.find((g) => g.value.product_group_type_id === 1);
+    const theirs = rollup ? null : (await api(`/catalog/groups?product_id=${other}`)).find((g) => g.value.product_group_type_id === 1);
+    const g = rollup || theirs;
+    const ids = g ? [...new Set([...g.value.product_id_list, pid, other])] : [other, pid];
+    await act(() => api("/catalog/groups", { body: { product_group_id: g ? g.product_group_id : null, name: g ? g.value.product_group_name : v.long_name, type: 1, product_ids: ids } }));
+    done("Rolled up", pid);
+  });
+  bindRows(m, d.groups, (g) => groupDialog(g, () => titleDialog(pid, reload)));
+  $("#bf", m).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    await act(() => api("/catalog/barcodes", { body: { barcode: new FormData(e.target).get("barcode"), product_id: pid } }), "Barcode added");
+    done("Barcode added", pid);
+  });
+  $$("button[data-delb]", m).forEach((b) => (b.onclick = async () => {
+    await act(() => api("/catalog/barcodes/delete", { body: { barcode: b.dataset.delb } }), "Barcode deleted"); done("Barcode deleted", pid);
+  }));
+  $("#savelua", m).onclick = async () => { await act(() => api("/catalog/titles", { body: { product_id: pid, lua: $("#lua", m).value } }), "Saved"); done("Saved", pid); };
+}
+
+function groupDialog(g, reload) {
+  const v = g ? g.value : { product_group_type_id: 1, product_id_list: [] };
+  const m = modal(`<h3>${g ? "Product group " + esc(g.product_group_id) : "New product group"}</h3><form id="gf">
+    <label>Name <input name="name" value="${esc(v.product_group_name || "")}" required></label>
+    <label>Type <select name="type">${[[1, "title rollup (DVD / Blu-ray / 4K of one title)"], [3, "multi-disc"], [6, "multi-disc workaround"]].map(([t, l]) => `<option value="${t}" ${t === v.product_group_type_id ? "selected" : ""}>${t} ${l}</option>`).join("")}</select></label>
+    <label>Product ids (comma separated) <input name="ids" value="${esc((v.product_id_list || []).join(", "))}" required></label>
+    <div class="toolbar mt"><button class="primary">Save</button><button type="button" id="cl">Cancel</button><span class="grow"></span>${g ? '<button type="button" class="danger" id="del">Delete group</button>' : ""}</div></form>`);
+  $("#cl", m).onclick = closeModal;
+  $("#gf", m).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    await act(() => api("/catalog/groups", { body: { product_group_id: g ? g.product_group_id : null, name: f.get("name"), type: +f.get("type"), product_ids: csv(f.get("ids")).map(Number) } }), "Saved");
+    closeModal(); reload();
+  });
+  if (g) $("#del", m).onclick = async () => {
+    if (!confirm("Delete this product group?")) return;
+    await act(() => api(`/catalog/groups/${g.product_group_id}/delete`, { body: {} }), "Deleted"); closeModal(); reload();
+  };
+}
+
+async function catalogGroups(root) {
+  root.innerHTML = `<div class="toolbar"><input id="gq" class="grow" placeholder="Group name or id"><button id="gg">Search</button><button class="primary" id="gn">New group</button></div><div id="gl"></div>`;
+  const load = async () => {
+    const rows = await api("/catalog/groups?" + new URLSearchParams({ q: $("#gq").value }));
+    $("#gl").innerHTML = table(rows, [{ key: "product_group_id", label: "Group" }, { key: "value", label: "Name", render: (v) => esc(v.product_group_name) },
+      { key: "value", label: "Type", render: (v) => esc(v.product_group_type_id) }, { key: "value", label: "Titles", wrap: true, render: (v) => esc((v.product_id_list || []).join(", ")) }], { onclick: true });
+    bindRows($("#gl"), rows, (g) => groupDialog(g, load));
+  };
+  $("#gg").onclick = load; $("#gq").addEventListener("keydown", (e) => e.key === "Enter" && load());
+  $("#gn").onclick = () => groupDialog(null, load);
+  await load();
+}
+
+async function catalogBarcodes(root) {
+  root.innerHTML = `<form id="ba" class="card inline"><b>Add or change</b><input name="barcode" placeholder="Barcode (digits)" required><input name="product_id" placeholder="Product id" required size="10">
+      <select name="status"><option value="0">0 Known</option><option value="1">1 WrongTitle</option><option value="2">2 Damaged</option><option value="3">3 Thinned</option><option value="6">6 Fraud</option></select><button class="primary">Save</button></form>
+    <div class="toolbar mt"><input id="bq" class="grow" placeholder="Barcode (shows it and the ones after it)"><button id="bg">Look up</button></div>
+    <p class="muted">Without a search: barcodes added here or learned from kiosk transactions, newest first. Imported barcodes are listed per title.</p><div id="bl"></div>`;
+  const load = async () => {
+    const rows = await api("/catalog/barcodes?" + new URLSearchParams({ q: $("#bq").value, limit: "100" }));
+    $("#bl").innerHTML = table(rows, [{ key: "barcode" }, { key: "product_id", label: "Product id" }, { key: "status" }, { key: "rental_count", label: "Rentals" }, { key: "source" }, { key: "updated_at", label: "Updated" },
+      { key: "barcode", label: "", render: (b) => `<button data-delb="${esc(b)}">Delete</button>` }]);
+    $$("button[data-delb]", root).forEach((b) => (b.onclick = async () => { await act(() => api("/catalog/barcodes/delete", { body: { barcode: b.dataset.delb } }), "Deleted"); load(); }));
+  };
+  $("#ba").addEventListener("submit", async (e) => { e.preventDefault(); await act(() => api("/catalog/barcodes", { body: Object.fromEntries(new FormData(e.target)) }), "Saved"); load(); });
+  $("#bg").onclick = load;
+  await load();
+}
+
+async function catalogTables(root) {
+  const st = await api("/catalog");
+  const names = st.tables.map((t) => t.name).filter((n) => n !== "Cache");
+  root.innerHTML = `<div class="toolbar"><select id="tt">${names.map((n) => `<option>${esc(n)}</option>`).join("")}</select><input id="tq" class="grow" placeholder="Key or text">
+    <button id="tg">Show</button><button id="tnew">New row</button></div><p class="muted">Rows are Lua table literals, as the engine reads them.</p><div id="tr"></div>`;
+  const edit = (tbl, row, load) => {
+    const m = modal(`<h3>${esc(tbl)} ${row ? esc(row.key) : "(new row)"}</h3>${row ? "" : '<label>Key <input id="k"></label>'}
+      <textarea id="lv" rows="10" style="width:100%">${esc(row ? row.lua : "{  }")}</textarea>
+      <div class="toolbar mt"><button class="primary" id="sv">Save</button><button id="cl">Cancel</button><span class="grow"></span>${row ? '<button class="danger" id="dl">Delete row</button>' : ""}</div>`);
+    $("#cl", m).onclick = closeModal;
+    $("#sv", m).onclick = async () => {
+      const key = row ? row.key : $("#k", m).value;
+      await act(() => api(`/catalog/rows/${encodeURIComponent(tbl)}/${encodeURIComponent(key)}`, { method: "PUT", body: { lua: $("#lv", m).value } }), "Saved"); closeModal(); load();
+    };
+    if (row) $("#dl", m).onclick = async () => { if (!confirm("Delete this row?")) return; await act(() => api(`/catalog/rows/${encodeURIComponent(tbl)}/${encodeURIComponent(row.key)}/delete`, { body: {} }), "Deleted"); closeModal(); load(); };
+  };
+  const load = async () => {
+    const tbl = $("#tt").value;
+    const d = await api(`/catalog/rows/${encodeURIComponent(tbl)}?` + new URLSearchParams({ q: $("#tq").value, limit: "200" }));
+    $("#tr").innerHTML = `<p class="muted">${esc(d.total)} rows</p>` + table(d.rows, [{ key: "key" }, { key: "lua", label: "Value", wrap: true, render: (v) => `<code>${esc(v.slice(0, 300))}</code>` }], { onclick: true });
+    bindRows($("#tr"), d.rows, (r) => edit(tbl, r, load));
+  };
+  $("#tg").onclick = load; $("#tt").onchange = load; $("#tnew").onclick = () => edit($("#tt").value, null, load);
+  if (names.length) await load();
+}
+
+async function catalogPublish(root) {
+  const d = await api("/catalog");
+  const s = d.state || {};
+  const changed = s.changed_at && (!s.stamped_at || s.changed_at > s.stamped_at);
+  root.innerHTML = `<div class="grid2"><div class="card"><b>Catalog</b>
+      <p>${s.imported_at ? `Imported from <code>${esc(s.source)}</code> ${esc(fmtDate(s.imported_at))}.` : "Nothing imported yet."}
+      ${s.changed_at ? ` Last change ${esc(fmtDate(s.changed_at))}${changed ? " (not built since)" : ""}.` : ""}</p>
+      ${table(d.tables, [{ key: "name", label: "profile.data table" }, { key: "rows" }])}
+      <p class="muted">${esc(d.images)} images; barcodes: ${d.barcodes.map((b) => `${esc(b.n)} ${esc(b.source)}`).join(", ") || "none"}.</p></div>
+    <div><form id="pf" class="card"><b>Publish to kiosks</b><p class="muted">Builds profile.data and inventory.data and adds them to the
+      <code>dvd-data</code> repository (head ${short(d.repo && d.repo.head)}) as VCDIFF deltas. Kiosks get it on their next Update Service poll.</p>
+      <label>Kiosks <select name="scope"><option value="all">every kiosk</option><option value="market">one market</option><option value="store">one kiosk</option></select></label>
+      <label>Market / kiosk <input name="target" list="mkts" placeholder="market name or kiosk id"><datalist id="mkts">${d.markets.map((x) => `<option>${esc(x)}</option>`).join("")}</datalist></label>
+      <label>Label <input name="label" placeholder="catalog-yyyymmdd-hhmm"></label><button class="primary">Build and publish</button>
+      ${s.last_build ? `<p class="muted">Last: ${esc(s.last_build.revision ? s.last_build.revision.slice(0, 10) + " " + (s.last_build.label || "") : "no change")} for ${esc(s.last_build.scope)} ${esc(s.last_build.target || "")} (${esc(fmtDate(s.last_build.at))})</p>` : ""}</form>
+    <form id="if" class="card mt"><b>Import</b><p class="muted">Replaces the catalog (titles, tables, box art and imported barcodes;
+      barcodes added here or learned from kiosks are kept). About 3 minutes for a full kiosk catalog.</p>
+      <label>dvd-data revision <input name="revision" placeholder="served head (default), or hash / label"></label>
+      <label>or a folder in the rb-admin container with profile.data and inventory.data <input name="folder" placeholder="/packages/catalog"></label>
+      <button>Import</button></form></div></div>
+    <h3>Catalog jobs</h3><div id="cj"></div>`;
+  const drawJobs = (jobs) => {
+    $("#cj").innerHTML = table(jobs, [{ key: "id" }, { key: "source", wrap: true }, { key: "status", render: (v) => pill(v, v === "done" ? "ok" : v === "failed" ? "bad" : "warn") },
+      { key: "progress", label: "Last step", wrap: true, render: (v) => esc(v.length ? v[v.length - 1].m : "") }, { key: "started_at", label: "Started" }, { key: "finished_at", label: "Finished" }], { empty: "No catalog jobs yet." });
+  };
+  drawJobs(d.jobs);
+  const poll = async () => {
+    clearTimeout(catalogPublish.timer);
+    if (!location.hash.startsWith("#/catalog/publish")) return;
+    const p = await api("/catalog");
+    drawJobs(p.jobs);
+    if (p.jobs.some((j) => j.status === "running")) catalogPublish.timer = setTimeout(poll, 3000);
+  };
+  $("#pf").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.target));
+    if (f.scope !== "all" && !f.target) return toast("Name the market or kiosk", true);
+    if (!confirm(f.scope === "all" ? "Publish the catalog to every kiosk?" : `Publish the catalog to ${f.scope} ${f.target}?`)) return;
+    await act(() => api("/catalog/publish", { body: f }), (x) => `Publishing (job ${x.job})`); poll();
+  });
+  $("#if").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!confirm("Replace the catalog with this import? Unpublished edits are lost.")) return;
+    await act(() => api("/catalog/import", { body: Object.fromEntries(new FormData(e.target)) }), (x) => `Importing (job ${x.job})`); poll();
+  });
+  if (d.jobs.some((j) => j.status === "running")) poll();
+}
+
 // ----------------------------------------------------------------------------------- transactions
 routes.transactions = async () => {
   title("Transactions");
@@ -671,6 +932,7 @@ routes.packages = async () => {
       <code>admin build-seed --add</code>.</p>
       <label>History <select name="edition"><option value="">served history</option>${d.editions.map((e) => `<option>${esc(e.name)}</option>`).join("")}</select></label>
       <label><input type="checkbox" name="all" checked> every repository at its head</label>
+      <label><input type="checkbox" name="catalog"> add the catalog as it is now (a new dvd-data revision; see Catalog)</label>
       <label>or these, one <code>name</code> or <code>name@revision-or-label</code> per line <textarea name="repos" rows="3" placeholder="kop-v2-engine@kop-v2-engine-Calvin"></textarea></label>
       <label>Date <input name="date" placeholder="MMDDYYYY (default today)" size="12"></label>
       <button class="primary">Build</button></form>
@@ -689,7 +951,7 @@ routes.packages = async () => {
     const repos = String(f.get("repos") || "").split("\n").map((x) => x.trim()).filter(Boolean)
       .map((x) => ({ name: x.split("@")[0], revision: x.includes("@") ? x.slice(x.indexOf("@") + 1) : null }));
     const all = f.get("all") === "on" && !repos.length;
-    await act(() => api("/packages/build", { body: { all, repos, edition: f.get("edition") || null, date: f.get("date") || null } }),
+    await act(() => api("/packages/build", { body: { all, repos, edition: f.get("edition") || null, date: f.get("date") || null, catalog: f.get("catalog") === "on" } }),
       (x) => `Building ${x.file} (job ${x.job})`);
     poll();
   });

@@ -60,7 +60,7 @@ pre { background: var(--code); padding: 10px; border-radius: 6px; overflow: auto
 .kv { display: grid; grid-template-columns: 170px 1fr; gap: 4px 12px; }
 .kv div:nth-child(odd) { color: var(--muted); }
 .tabs { display: flex; gap: 4px; margin-bottom: 12px; flex-wrap: wrap; }
-.tabs button.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.tabs button.on, .tabs a.button.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 .modal { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); display: flex; align-items: flex-start;
   justify-content: center; padding: 40px 16px; overflow-y: auto; z-index: 10; }
 .modal-body { width: 760px; max-width: 100%; }

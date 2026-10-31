@@ -93,7 +93,7 @@ docker compose run --rm -v "$PWD/work:/work" rb-admin python -m redbox_backend a
 ```
 admin build-seed <out.zip | folder> [--repo NAME[@REV] ... | --all] [--edition NAME]
                  [--add REPO DIR TARGET_PATH ...] [--label REPO=LABEL ...] [--no-deltas]
-                 [--retarget OLD=NEW ...] [--date MMDDYYYY] [--allow-placeholders]
+                 [--retarget OLD=NEW ...] [--date MMDDYYYY] [--allow-placeholders] [--catalog]
 admin check-seed <zip> [--compare REFERENCE.zip] [--no-apply]
 ```
 
@@ -103,6 +103,9 @@ admin check-seed <zip> [--compare REFERENCE.zip] [--no-apply]
   served head, or the head pinned with `admin pin`. `--all` takes every repository at its head.
 - `--edition NAME`: take the history of an imported seed instead of the served history. For example,
   `--all --edition data-572024` rebuilds that seed.
+- `--catalog`: build the kiosk catalog as it is now ([catalog.md](catalog.md)) and add it like `--add` as a
+  `dvd-data` revision (label `catalog-<date>`, or `--label dvd-data=...`). The dashboard's **Build a seed zip** has
+  the same option.
 - `--add REPO DIR TARGET_PATH`: add your own content as a new revision on top of REPO. REPO's served head is
   the base (or the `--repo` revision); a repository that doesn't exist yet starts empty.
   - Files under `DIR` go to `TARGET_PATH`, with subfolders appended.
