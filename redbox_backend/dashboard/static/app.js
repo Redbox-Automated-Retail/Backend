@@ -856,7 +856,7 @@ async function catalogPublish(root) {
     <form id="if" class="card mt"><b>Import</b><p class="muted">Replaces the catalog (titles, tables, box art and imported barcodes;
       barcodes added here or learned from kiosks are kept). About 3 minutes for a full kiosk catalog.</p>
       <p><b>Normally leave both fields empty:</b> the catalog is imported from the dvd-data served to kiosks, which is the
-      one the seed zips you imported on <a href="#/packages">Update packages</a> brought in. Do not enter a seed zip here.</p>
+      one the seed zips you imported on <a href="#/packages">Data zips</a> brought in. Do not enter a seed zip here.</p>
       <label>dvd-data revision (optional) <input name="revision" placeholder="empty = the served head; or a hash / label"></label>
       <label>or a folder (optional, advanced) inside the rb-admin container holding loose profile.data and inventory.data files
         <input name="folder" placeholder="empty; e.g. /packages/catalog - not a .zip"></label>
