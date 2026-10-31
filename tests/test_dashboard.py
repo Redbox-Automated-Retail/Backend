@@ -242,27 +242,33 @@ def test_kiosk_edit_and_activity(client):
 
 def test_stores_feed_the_kiosk_installer(client):
     login(client)
+    if "Store" not in client.get("/api/stores/lookups").json()["present"]:
+        pytest.skip("no Store table (no catalog or stores imported)")
     sid = 990600 + uuid.uuid4().int % 300
-    state = "St-" + uuid.uuid4().hex[:6]
-    r = client.post("/api/stores", headers=H, json={"id": sid, "label": "Dash store", "state_name": state, "banner_name": "Dash banner",
-                                                     "address": "1 Main St", "city": "Dallas", "zip": "75201", "market_name": "Dash market",
-                                                     "pending": True})
+    bname, mname = "Banner " + uuid.uuid4().hex[:6], "Market " + uuid.uuid4().hex[:6]
+    banner = client.post("/api/stores/banners", headers=H, json={"name": bname}).json()["saved"]
+    market = client.post("/api/stores/markets", headers=H, json={"name": mname}).json()["saved"]
+    r = client.post("/api/stores", headers=H, json={"store_id": sid, "address1": "1 Main St", "city": "Dallas", "state": "TX",
+                                                     "zip": "75201", "banner_id": banner, "market_id": market,
+                                                     "offered": True, "due_time": "9:00 PM"})
     assert r.status_code == 200, r.text
-    s = next(x for x in client.get("/api/stores").json()["stores"] if x["id"] == sid)
-    assert s["state_name"] == state and s["ops_market"] == "Dash market" and s["label"] == "Dash store"
+    assert r.json()["store"]["address"] == "1 Main St Dallas, TX 75201"
+    found = client.get(f"/api/stores?q={sid}").json()["rows"]
+    assert [(x["store_id"], x["banner"], x["market"], x["offered"]) for x in found] == [(sid, bname, mname, True)]
     try:
         # what the kiosk installer asks the Proxy API during setup: state, then banner, then store, then its ops market
         api = cc.client()
-        states = api.get("/api/installer/getpendingstates").json()["States"]
-        assert {"Id": s["state_id"], "Description": state} in states
-        banners = api.get(f"/api/installer/getpendingbanners?stateid={s['state_id']}").json()["Banners"]
-        assert [b["Name"] for b in banners] == ["Dash banner"]
-        kiosks = api.get(f"/api/installer/getpendingkiosks?stateid={s['state_id']}&bannerid={banners[0]['Id']}").json()["PendingKiosks"]
-        assert [(k["Id"], k["City"], k["MarketName"]) for k in kiosks] == [(sid, "Dallas", "Dash market")]
-        assert api.get(f"/api/installer/getopsmarket?kioskid={sid}").json()["OpsMarket"] == "Dash market"
+        texas = next(s for s in api.get("/api/installer/getpendingstates").json()["States"] if s["Description"] == "Texas")
+        banners = api.get(f"/api/installer/getpendingbanners?stateid={texas['Id']}").json()["Banners"]
+        assert {"Id": banner, "Name": bname} in banners
+        kiosks = api.get(f"/api/installer/getpendingkiosks?stateid={texas['Id']}&bannerid={banner}").json()["PendingKiosks"]
+        assert [(k["Id"], k["City"], k["MarketName"]) for k in kiosks] == [(sid, "Dallas", mname)]
+        assert api.get(f"/api/installer/getopsmarket?kioskid={sid}").json()["OpsMarket"] == mname
         # no longer offered: gone from the installer's list
-        assert client.post("/api/stores", headers=H, json=dict(s, pending=False)).status_code == 200
-        assert not api.get(f"/api/installer/getpendingbanners?stateid={s['state_id']}").json()["Banners"]
+        assert client.post("/api/stores/offer", headers=H, json={"store_id": sid, "offered": False}).status_code == 200
+        assert not api.get(f"/api/installer/getpendingkiosks?stateid={texas['Id']}&bannerid={banner}").json()["PendingKiosks"]
     finally:
-        client.post("/api/stores/delete", headers=H, json={"id": sid})
+        client.post("/api/stores/delete", headers=H, json={"store_id": sid})
         cc.client().sql("DELETE FROM cloud_kiosk_locations WHERE kiosk_id = %s", sid)
+        cc.client().sql("DELETE FROM catalog_rows WHERE (tbl = 'Banner' AND key = %s) OR (tbl = 'Market' AND key = %s)",
+                        str(banner), str(market))

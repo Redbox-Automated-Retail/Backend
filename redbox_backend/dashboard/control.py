@@ -556,59 +556,125 @@ async def rentals(kind: str = "rentals", kiosk_id: Optional[str] = None, status:
 
 
 # ------------------------------------------------------------------------------------------- stores
+# Store management: the profile.data tables Store, Banner and Market (catalog/stores.py), built into profile.data
+# with the catalog, and the stores offered to the kiosk installer.
 
-STORE_FIELDS = ("state_id", "state_name", "banner_id", "banner_name", "address", "city", "zip", "due_time", "market_name",
-                "kaseya_market_name", "pending")
+def _stores_call(fn):
+    async def run(*a, **kw):
+        from ..catalog import stores as st
+        try:
+            return await fn(st, *a, **kw)
+        except st.StoreError as e:
+            raise HTTPException(400, str(e))
+    return run
 
 
 @router.get("/api/stores")
-async def stores():
-    """The stores a kiosk can be set up as: the kiosk installer offers the pending ones (state, then banner, then
-    store; Proxy API /api/installer/getpending*) and the chosen store gives the kiosk its id, address and market."""
-    rows = await db.fetch(
-        "SELECT s.*, l.label, l.ops_market, l.kaseya_server, l.latitude, l.longitude, k.last_seen_at, k.market AS kiosk_market"
-        " FROM cloud_installer_kiosks s LEFT JOIN cloud_kiosk_locations l ON l.kiosk_id = s.id"
-        " LEFT JOIN kiosks k ON k.kiosk_id = s.id ORDER BY s.id")
-    return srv.ok({"stores": rows,
-                   "states": await db.fetch("SELECT DISTINCT state_id, state_name FROM cloud_installer_kiosks ORDER BY state_name"),
-                   "banners": await db.fetch("SELECT DISTINCT banner_id, banner_name FROM cloud_installer_kiosks ORDER BY banner_name"),
-                   "markets": [r["m"] for r in await db.fetch(
-                       "SELECT DISTINCT market_name AS m FROM cloud_installer_kiosks WHERE market_name <> ''"
-                       " UNION SELECT DISTINCT market FROM kiosks WHERE market <> '' ORDER BY 1")]})
+async def stores_list(q: Optional[str] = None, offered: Optional[str] = None, limit: int = 100, offset: int = 0):
+    from ..catalog import stores as st
+    return srv.ok(await st.search(q, None if offered in (None, "") else offered == "1", limit, offset))
+
+
+@router.get("/api/stores/lookups")
+async def stores_lookups():
+    from ..catalog import stores as st
+    d = await st.lookups()
+    d["jobs"] = await db.fetch("SELECT * FROM upd_import_jobs WHERE source LIKE 'stores%%' ORDER BY id DESC LIMIT 5")
+    d["counts"] = await db.fetchrow(
+        "SELECT (SELECT count(*) FROM catalog_rows WHERE tbl = 'Store') AS stores,"
+        " (SELECT count(*) FROM catalog_rows WHERE tbl = 'Banner') AS banners,"
+        " (SELECT count(*) FROM catalog_rows WHERE tbl = 'Market') AS markets,"
+        " (SELECT count(*) FROM cloud_installer_kiosks WHERE pending) AS offered")
+    return srv.ok(d)
 
 
 @router.post("/api/stores")
 async def store_save(body: dict):
-    """Add or change a store: its installer entry and its location (address, ops market for getopsmarket). The kiosk
-    row itself is made when the kiosk first calls in; an existing one gets the market and banner."""
-    try:
-        sid = int(body["id"])
-    except (KeyError, TypeError, ValueError):
-        raise HTTPException(400, "store id (a number) required")
-    v = {f: body.get(f) for f in STORE_FIELDS}
-    for name, idf in (("state_name", "state_id"), ("banner_name", "banner_id")):
-        if not (v[name] or "").strip():
-            raise HTTPException(400, f"{name.split('_')[0]} required")
-        if v[idf] in (None, ""):   # a new state / banner: reuse the id of the same name, else the next free one
-            col = idf
-            v[idf] = await db.fetchval(f"SELECT {col} FROM cloud_installer_kiosks WHERE lower({name}) = lower(%s) LIMIT 1", v[name]) \
-                or (await db.fetchval(f"SELECT coalesce(max({col}), 0) + 1 FROM cloud_installer_kiosks"))
-        v[idf] = int(v[idf])
-    v["pending"] = bool(v["pending"]) if v["pending"] is not None else True
-    cols = list(v)
-    await db.execute(f"INSERT INTO cloud_installer_kiosks (id, {', '.join(cols)}) VALUES (%s, {', '.join(['%s'] * len(cols))})"
-                     f" ON CONFLICT (id) DO UPDATE SET {', '.join(f'{c} = EXCLUDED.{c}' for c in cols)}", sid, *v.values())
-    loc = {"label": body.get("label") or None, "address": v["address"], "city": v["city"], "state": v["state_name"],
-           "zip": v["zip"], "ops_market": body.get("ops_market") or v["market_name"], "kaseya_server": body.get("kaseya_server") or None}
-    lc = list(loc)
-    await db.execute(f"INSERT INTO cloud_kiosk_locations (kiosk_id, {', '.join(lc)}) VALUES (%s, {', '.join(['%s'] * len(lc))})"
-                     f" ON CONFLICT (kiosk_id) DO UPDATE SET {', '.join(f'{c} = EXCLUDED.{c}' for c in lc)}", sid, *loc.values())
-    await db.execute("UPDATE kiosks SET market = %s, banner = %s WHERE kiosk_id = %s", v["market_name"] or None, v["banner_name"], sid)
-    await db.record_event(sid, "dashboard", "store-save", {"store": sid, "by": _who()})
-    return srv.ok({"saved": sid})
+    @_stores_call
+    async def run(st):
+        value = await st.save_store(body)
+        if "offered" in body:
+            await st.set_offer(value["store_id"], bool(body["offered"]), body.get("due_time") or None,
+                               body.get("kaseya_market_name") or None)
+        await db.record_event(value["store_id"], "dashboard", "store-save", {"store": value["store_id"], "by": _who()})
+        return srv.ok({"saved": value["store_id"], "store": value})
+    return await run()
+
+
+@router.post("/api/stores/offer")
+async def store_offer(body: dict):
+    @_stores_call
+    async def run(st):
+        await st.set_offer(body["store_id"], bool(body.get("offered", True)), body.get("due_time"), body.get("kaseya_market_name"))
+        return srv.ok({"store": body["store_id"], "offered": bool(body.get("offered", True))})
+    return await run()
 
 
 @router.post("/api/stores/delete")
 async def store_delete(body: dict):
-    """Take a store off the installer's list (its location and kiosk record stay)."""
-    return srv.ok({"deleted": await db.execute("DELETE FROM cloud_installer_kiosks WHERE id = %s", int(body["id"]))})
+    @_stores_call
+    async def run(st):
+        return srv.ok({"deleted": await st.delete_store(int(body["store_id"]))})
+    return await run()
+
+
+@router.get("/api/stores/{kind}")
+async def stores_named(kind: str, q: Optional[str] = None):
+    if kind not in ("banners", "markets"):
+        raise HTTPException(404)
+    tbl, field = ("Banner", "banner") if kind == "banners" else ("Market", "market")
+    where, args = "", []
+    if q:
+        where, args = f" AND (r.value->>'{field}_name' ILIKE %s OR r.key = %s)", [f"%{q}%", q]
+    rows = await db.fetch(
+        f"SELECT r.key::bigint AS id, r.value->>'{field}_name' AS name, r.edited_at,"
+        f" (SELECT count(*) FROM catalog_rows s WHERE s.tbl = 'Store' AND s.value->>'{field}_id' = r.key) AS stores"
+        f" FROM catalog_rows r WHERE r.tbl = %s AND r.key ~ '^[0-9]{{1,18}}$'{where} ORDER BY r.value->>'{field}_name'"
+        " LIMIT 500", tbl, *args)
+    return srv.ok(rows)
+
+
+@router.post("/api/stores/{kind}")
+async def stores_named_save(kind: str, body: dict):
+    if kind not in ("banners", "markets"):
+        raise HTTPException(404)
+
+    @_stores_call
+    async def run(st):
+        key = await st.save_named(st.BANNER if kind == "banners" else st.MARKET, body.get("id"), body.get("name"))
+        return srv.ok({"saved": key})
+    return await run()
+
+
+@router.get("/api/stores-installer")
+async def stores_installer():
+    return srv.ok(await db.fetch("SELECT i.*, k.last_seen_at FROM cloud_installer_kiosks i LEFT JOIN kiosks k"
+                                 " ON k.kiosk_id = i.id ORDER BY i.pending DESC, i.state_name, i.banner_name, i.id"))
+
+
+_store_tasks = set()
+
+
+@router.post("/api/stores-import")
+async def stores_import(body: dict):
+    """Replace Store / Banner / Market with a seed's (a dvd-data revision, default the served head), in the background."""
+    from ..catalog import stores as st
+    revision = (body.get("revision") or "").strip() or None
+    job = await db.fetchval("INSERT INTO upd_import_jobs (source, options) VALUES (%s,%s) RETURNING id",
+                            f"stores from dvd-data@{revision or 'served head'}", db.jsonb({"kind": "stores", "revision": revision}))
+
+    async def progress(msg):
+        await db.execute("UPDATE upd_import_jobs SET progress = progress || %s WHERE id=%s",
+                         db.jsonb([{"t": dt.datetime.now(dt.timezone.utc).isoformat(), "m": msg}]), job)
+
+    async def run():
+        try:
+            await st.import_tables(revision=revision, progress=progress)
+            await db.execute("UPDATE upd_import_jobs SET status='done', finished_at=now() WHERE id=%s", job)
+        except Exception as e:
+            await progress(f"failed: {e}")
+            await db.execute("UPDATE upd_import_jobs SET status='failed', finished_at=now() WHERE id=%s", job)
+    task = asyncio.create_task(run())
+    _store_tasks.add(task)
+    task.add_done_callback(_store_tasks.discard)
+    return srv.ok({"job": job})

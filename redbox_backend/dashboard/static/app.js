@@ -275,7 +275,7 @@ routes.kiosk = async (id, tab = "overview") => {
   title("Kiosk " + id);
   view().innerHTML = `<div class="crumb"><a href="#/kiosks">Kiosks</a>${k.market ? " / " + esc(k.market) : ""}</div>
     <div class="head"><div><h1>${esc(id)} <span class="dim" style="font-weight:600">${esc(loc.label || loc.city || "")}</span></h1>
-      <div class="lede row" style="gap:16px"><span class="st ${sc}"><span class="dot ${sc}"></span>${st}</span>${k.market ? `<span>${esc(k.market)} market</span>` : ""}
+      <div class="lede row" style="gap:16px"><span class="st ${sc}"><span class="dot ${sc}"></span>${st}</span><a class="link" href="#/stores/stores?q=${esc(id)}">Store ${esc(id)}</a>${k.market ? `<span>${esc(k.market)} market</span>` : ""}
         ${engine ? `<span>Kiosk Engine ${esc(engine)}</span>` : ""}${d.mqtt ? `<span class="dim">MQTT from ${esc(d.mqtt.peer)}</span>` : ""}</div></div>
       <span class="grow"></span>${can() ? `<button data-cmd="Ping">${ic("ping")}Ping</button><button data-cmd="TriggerGetConfigChanges">${ic("sliders")}Push config</button>
       <select id="more" class="button" style="width:auto;padding-right:8px"><option value="">More...</option><option value="TriggerReportFileSetVersions">Check file sets</option>
@@ -1425,66 +1425,140 @@ routes.logs = async () => {
   await load();
 };
 
-// ----------------------------------------------------------------------------------------- stores
-// The stores a kiosk can be set up as. The kiosk installer lists the pending ones (state, banner, store) from the
-// Proxy API; the store picked gives the kiosk its id, address and market.
-routes.stores = async () => {
-  const d = await api("/stores");
-  const q = query();
-  view().innerHTML = head("Stores", `${d.stores.length} stores · ${d.stores.filter((s) => s.pending).length} offered to the kiosk installer`,
-    can() ? `<button class="primary" id="ns">${ic("plus")}Add a store</button>` : "") + `
-    <p class="muted" style="margin-top:-8px">During setup the kiosk installer lists the <b>offered</b> stores by state and banner; picking one gives the
-      kiosk its store ID, address and market. Once the kiosk has connected you can stop offering the store.</p>
-    <div class="toolbar"><div class="search grow">${ic("search")}<input id="sf" placeholder="Store, address, city, market" value="${esc(q.q || "")}"></div>
-      <select id="ss"><option value="">all</option><option value="1">offered</option><option value="0">not offered</option></select></div>
-    <div class="card flush" id="st"></div>`;
-  const draw = () => {
-    const f = $("#sf").value.toLowerCase(), o = $("#ss").value;
-    const list = d.stores.filter((s) => (!o || String(+s.pending) === o) && (!f || JSON.stringify([s.id, s.address, s.city, s.state_name, s.market_name, s.banner_name, s.label]).toLowerCase().includes(f)));
-    $("#st").innerHTML = table(list, [{ key: "id", label: "Store", render: (v, s) => `<b>${esc(v)}</b>${s.label ? ` <span class="muted">${esc(s.label)}</span>` : ""}` },
-      { key: "banner_name", label: "Banner" }, { key: "address", label: "Address", render: (v, s) => `<span class="muted">${esc([v, s.city, s.state_name, s.zip].filter(Boolean).join(", "))}</span>` },
-      { key: "market_name", label: "Market" },
-      { key: "pending", label: "Installer", render: (v) => v ? '<span class="st ok"><span class="dot"></span>Offered</span>' : '<span class="st mute">Not offered</span>' },
-      { key: "last_seen_at", label: "Kiosk", render: (v, s) => v ? `<a class="link" href="#/kiosk/${esc(s.id)}">seen ${esc(ago(v))}</a>` : '<span class="dim">not set up yet</span>' }],
-      { onclick: can(), pad: true, empty: "No stores yet. Add one so a new kiosk can be set up as it." });
-    bindRows($("#st"), list, (s) => storeDialog(s));
-  };
-  const storeDialog = (s) => {
-    const opts = (rows, id, name, cur) => rows.map((r) => `<option value="${esc(r[id])}" ${String(r[id]) === String(cur) ? "selected" : ""}>${esc(r[name])}</option>`).join("");
-    const m = modal(`<h3>${s ? "Store " + esc(s.id) : "Add a store"}</h3><form id="sf2"><div class="grid2" style="gap:0 16px">
-        <label>Store ID <input name="id" type="number" required value="${esc(s ? s.id : "")}" ${s ? "readonly" : ""}></label>
-        <label>Name / label <input name="label" value="${esc(s ? s.label || "" : "")}" placeholder="e.g. Walgreens Mockingbird"></label>
-        <label>State <select name="state_id"><option value="">new state...</option>${opts(d.states, "state_id", "state_name", s && s.state_id)}</select>
-          <input name="state_name" placeholder="State name" value="${esc(s ? s.state_name : "")}" style="margin-top:6px"></label>
-        <label>Banner <select name="banner_id"><option value="">new banner...</option>${opts(d.banners, "banner_id", "banner_name", s && s.banner_id)}</select>
-          <input name="banner_name" placeholder="Banner (retailer) name" value="${esc(s ? s.banner_name : "")}" style="margin-top:6px"></label>
-        <label>Address <input name="address" value="${esc(s ? s.address || "" : "")}"></label>
-        <label>City <input name="city" value="${esc(s ? s.city || "" : "")}"></label>
-        <label>ZIP <input name="zip" value="${esc(s ? s.zip || "" : "")}"></label>
-        <label>Market <input name="market_name" list="mk" value="${esc(s ? s.market_name || "" : "")}"><datalist id="mk">${d.markets.map((x) => `<option>${esc(x)}</option>`).join("")}</datalist></label>
-        <label>Kaseya market <input name="kaseya_market_name" value="${esc(s ? s.kaseya_market_name || "" : "")}"></label>
-        <label>Due time <input name="due_time" value="${esc(s ? s.due_time || "" : "")}" placeholder="e.g. 9:00 PM"></label></div>
-        <label><input type="checkbox" name="pending" ${!s || s.pending ? "checked" : ""}> offer this store in the kiosk installer</label>
-        <div class="toolbar mt"><button class="primary">${s ? "Save" : "Add store"}</button><button type="button" id="cl">Cancel</button><span class="grow"></span>
-          ${s ? '<button type="button" class="danger" id="del">Remove from the installer list</button>' : ""}</div></form>`);
-    const f = $("#sf2", m);
-    const sync = (sel, input, rows, id, name) => { sel.onchange = () => { const r = rows.find((x) => String(x[id]) === sel.value); input.value = r ? r[name] : ""; input.classList.toggle("hidden", !!r); }; sel.onchange(); };
-    sync(f.state_id, f.state_name, d.states, "state_id", "state_name");
-    sync(f.banner_id, f.banner_name, d.banners, "banner_id", "banner_name");
-    $("#cl", m).onclick = closeModal;
-    f.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const b = Object.fromEntries(new FormData(f)); b.pending = !!b.pending;
-      await act(() => api("/stores", { body: b }), `Store ${b.id} saved`); closeModal(); route();
-    });
-    if (s) $("#del", m).onclick = async () => {
-      if (!confirm(`Take store ${s.id} off the installer's list?`)) return;
-      await act(() => api("/stores/delete", { body: { id: s.id } }), "Removed"); closeModal(); route();
-    };
-  };
+// ----------------------------------------------------------------------------------- store management
+// Stores are physical locations (the profile.data tables Store, Banner, Market, written into profile.data with the
+// catalog on the next build); a kiosk is the machine set up as one of them. The kiosk installer lists the stores
+// offered to it (state, banner, store) and the one picked gives the kiosk its store ID, address and market.
+const STORE_TABS = [["stores", "Stores"], ["banners", "Banners"], ["markets", "Markets"], ["installer", "Kiosk installer"]];
+let storeLookups = null;
+routes.stores = async (tab = "stores") => {
+  storeLookups = await api("/stores/lookups");
+  const L = storeLookups, c = L.counts;
+  const missing = ["Store", "Banner", "Market"].filter((x) => !L.present.includes(x));
+  view().innerHTML = head("Stores", `${num(c.stores)} stores · ${num(c.banners)} banners · ${num(c.markets)} markets · ${num(c.offered)} offered to the kiosk installer`,
+    can() ? `<button id="imp">${ic("upload")}Import from seed data</button>${tab === "stores" ? `<button class="primary" id="ns">${ic("plus")}Add a store</button>` : ""}` : "") +
+    (missing.length ? `<div class="card" style="margin-bottom:16px"><b>No ${missing.join(", ")} table yet.</b> <span class="muted">Import the stores from seed data (a data zip imported on Data zips) or import the whole catalog.</span></div>` : "") +
+    `<div class="tabs">${STORE_TABS.map(([t, l]) => `<a href="#/stores/${t}" class="${t === tab ? "on" : ""}">${l}</a>`).join("")}</div><div id="sv"></div>`;
+  if ($("#imp")) $("#imp").onclick = storeImportDialog;
   if ($("#ns")) $("#ns").onclick = () => storeDialog(null);
-  $("#sf").addEventListener("input", draw); $("#ss").onchange = draw; draw();
+  const root = $("#sv");
+  if (tab === "stores") {
+    const q = query();
+    root.innerHTML = `<div class="toolbar"><div class="search grow">${ic("search")}<input id="sq" placeholder="Store ID, address, city, state, banner, market" value="${esc(q.q || "")}"></div>
+      <select id="so"><option value="">all stores</option><option value="1">offered to the installer</option><option value="0">not offered</option></select></div><div class="card flush" id="st"></div>`;
+    let rows = [];
+    const load = async (more) => {
+      const p = new URLSearchParams({ q: $("#sq").value, offered: $("#so").value, limit: "100", offset: more ? String(rows.length) : "0" });
+      const d = await api("/stores?" + p);
+      rows = more ? rows.concat(d.rows) : d.rows;
+      $("#st").innerHTML = `<p class="muted" style="padding:14px 16px 0">${num(d.total)} stores${d.total > rows.length ? `, ${num(rows.length)} shown` : ""}</p>` +
+        table(rows, [{ key: "store_id", label: "Store", render: (v, r) => `<b>${esc(v)}</b>${r.edited_at ? ' <span class="tag red">edited</span>' : ""}` }, { key: "banner", label: "Banner", render: (v) => esc(v || "-") },
+          { key: "store", label: "Address", render: (v) => `<span class="muted">${esc(v.address || "")}</span>` }, { key: "market", label: "Market", render: (v) => esc(v || "-") },
+          { key: "offered", label: "Installer", render: (v) => v ? '<span class="st ok"><span class="dot"></span>Offered</span>' : '<span class="st mute">-</span>' },
+          { key: "last_seen_at", label: "Kiosk", render: (v, r) => v ? `<a href="#/kiosk/${esc(r.store_id)}">seen ${esc(ago(v))} →</a>` : '<span class="dim">none</span>' }],
+          { onclick: true, pad: true, empty: "No stores match." }) +
+        (d.total > rows.length ? `<div class="toolbar" style="padding:12px 16px"><button id="more">Show more</button></div>` : "");
+      bindRows($("#st"), rows, (r) => storeDialog(r));
+      if ($("#more")) $("#more").onclick = () => load(true);
+    };
+    $("#sq").addEventListener("keydown", (e) => e.key === "Enter" && load()); $("#so").onchange = () => load();
+    await load();
+  } else if (tab === "banners" || tab === "markets") {
+    const one = tab === "banners" ? "banner" : "market";
+    root.innerHTML = `<div class="toolbar"><div class="search grow">${ic("search")}<input id="nq" placeholder="Name or ID"></div>${can() ? `<button class="primary" id="nn">${ic("plus")}Add a ${one}</button>` : ""}</div>
+      <div class="card flush" id="nt"></div>`;
+    const load = async () => {
+      const rows = await api(`/stores/${tab}?` + new URLSearchParams({ q: $("#nq").value }));
+      $("#nt").innerHTML = table(rows, [{ key: "id", label: "ID" }, { key: "name", label: one[0].toUpperCase() + one.slice(1), render: (v) => `<b>${esc(v)}</b>` },
+        { key: "stores", label: "Stores", right: true, render: (v, r) => `<a class="link" href="#/stores/stores?q=${encodeURIComponent(r.name)}">${num(v)}</a>` },
+        { key: "edited_at", label: "", render: (v) => v ? '<span class="tag red">edited</span>' : "" }], { onclick: can(), pad: true, empty: `No ${tab}.` });
+      bindRows($("#nt"), rows, (r) => edit(r));
+    };
+    const edit = (r) => {
+      const m = modal(`<h3>${r ? `${esc(one[0].toUpperCase() + one.slice(1))} ${esc(r.id)}` : `Add a ${one}`}</h3><form id="nf"><label>Name <input name="name" required value="${esc(r ? r.name : "")}"></label>
+        <p class="muted">Goes into profile.data's ${one === "banner" ? "Banner" : "Market"} table on the next catalog build${r && r.stores ? `; ${num(r.stores)} stores use it` : ""}.</p>
+        <div class="toolbar mt"><button class="primary">Save</button><button type="button" id="cl">Cancel</button></div></form>`);
+      $("#cl", m).onclick = closeModal;
+      $("#nf", m).addEventListener("submit", async (e) => {
+        e.preventDefault();
+        await act(() => api(`/stores/${tab}`, { body: { id: r ? r.id : null, name: new FormData(e.target).get("name") } }), "Saved"); closeModal(); load();
+      });
+    };
+    if ($("#nn")) $("#nn").onclick = () => edit(null);
+    $("#nq").addEventListener("keydown", (e) => e.key === "Enter" && load());
+    await load();
+  } else {
+    const rows = await api("/stores-installer");
+    root.innerHTML = `<p class="muted">What the kiosk installer offers during setup, grouped by state and banner. Offer a store from its page on the Stores tab;
+        stop offering it once its kiosk is installed.</p><div class="card flush">${table(rows, [{ key: "id", label: "Store", render: (v) => `<b>${esc(v)}</b>` },
+      { key: "state_name", label: "State" }, { key: "banner_name", label: "Banner" }, { key: "address", label: "Address", render: (v, r) => `<span class="muted">${esc([v, r.city, r.zip].filter(Boolean).join(", "))}</span>` },
+      { key: "market_name", label: "Market" }, { key: "pending", label: "", render: (v) => v ? '<span class="st ok"><span class="dot"></span>Offered</span>' : '<span class="st mute">Not offered</span>' },
+      { key: "last_seen_at", label: "Kiosk", render: (v, r) => v ? `<a href="#/kiosk/${esc(r.id)}">seen ${esc(ago(v))} →</a>` : '<span class="dim">not set up yet</span>' },
+      { key: "_", label: "", right: true, render: (v, r) => can() ? `<button class="sm" data-off="${esc(r.id)}" data-on="${r.pending ? "" : "1"}">${r.pending ? "Stop offering" : "Offer"}</button>` : "" }],
+      { pad: true, empty: "No store is offered to the kiosk installer. Open a store on the Stores tab and offer it." })}</div>`;
+    $$("button[data-off]").forEach((b) => (b.onclick = async () => { await act(() => api("/stores/offer", { body: { store_id: +b.dataset.off, offered: !!b.dataset.on } }), "Saved"); route(); }));
+  }
 };
+
+async function storeDialog(r) {
+  const L = storeLookups;
+  const v = r ? r.store : { return_time: "09:00PM", purchase_price: 5, sell_thru: true, collection_method: 6 };
+  const opt = (list, cur, none) => `<option value="">${none}</option>` + list.map((x) => `<option value="${esc(x.id)}" ${String(x.id) === String(cur) ? "selected" : ""}>${esc(x.name)}</option>`).join("");
+  const f = (k, l, ph = "", type = "text") => `<label>${esc(l)} <input name="${k}" type="${type}" value="${esc(v[k] ?? "")}" placeholder="${esc(ph)}" ${type === "number" ? 'step="any"' : ""}></label>`;
+  const m = modal(`<h3>${r ? "Store " + esc(r.store_id) : "Add a store"}</h3>
+    <p class="muted" style="margin-top:-6px">A physical location. Saved into profile.data's Store table on the next catalog build; the kiosk set up as this store reads its address, tax rates, return time, market and banner from it.</p>
+    <form id="sf"><div class="grid2" style="gap:0 16px">
+      <label>Store ID <input name="store_id" type="number" required value="${esc(r ? r.store_id : "")}" ${r ? "readonly" : ""}></label>
+      <label>Banner (retailer) <select name="banner_id">${opt(L.banners, v.banner_id, "none")}</select></label>
+      ${f("address1", "Street address")}${f("address2", "Address line 2")}${f("city", "City")}
+      <label>State <select name="state"><option value="">-</option>${L.states.map((s) => `<option value="${s.code}" ${s.code === v.state ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select></label>
+      ${f("zip", "ZIP")}${f("county", "County")}
+      <label>Market <select name="market_id">${opt(L.markets, v.market_id, "none")}</select></label>
+      ${f("return_time", "Return time", "09:00PM")}${f("rental_tax_rate", "Rental tax rate (%)", "", "number")}${f("purchase_tax_rate", "Purchase tax rate (%)", "", "number")}
+      ${f("purchase_price", "Purchase price", "", "number")}${f("service_fee_tax_rate", "Service fee tax rate (%)", "", "number")}
+      ${f("open_date", "Open date", "yyyyMMdd")}${f("return_only_mode_date", "Return-only from", "yyyyMMdd")}</div>
+      <label class="inline"><input type="checkbox" name="sell_thru" ${v.sell_thru ? "checked" : ""}> sells discs (sell-thru)</label>
+      <div class="card mt" style="background:var(--panel-2)"><label class="inline" style="margin:0"><input type="checkbox" name="offered" ${r && r.offered ? "checked" : ""}> <b style="color:var(--text)">offer this store in the kiosk installer</b></label>
+        <div class="grid2" style="gap:0 16px"><label>Due time <input name="due_time" value="${esc(r ? r.due_time || "" : "")}" placeholder="shown by the installer"></label>
+        <label>Kaseya market <input name="kaseya_market_name" value="${esc(r ? r.kaseya_market_name || "" : "")}"></label></div></div>
+      <div class="toolbar mt">${can() ? '<button class="primary">Save</button>' : ""}<button type="button" id="cl">Close</button><span class="grow"></span>
+        ${r && r.last_seen_at ? `<a class="button" href="#/kiosk/${esc(r.store_id)}">Its kiosk</a>` : ""}${r && can() ? '<button type="button" class="danger" id="del">Delete store</button>' : ""}</div></form>`);
+  $("#cl", m).onclick = closeModal;
+  $("#sf", m).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const b = Object.fromEntries(new FormData(e.target));
+    b.sell_thru = !!b.sell_thru; b.offered = !!b.offered;
+    await act(() => api("/stores", { body: b }), `Store ${b.store_id} saved; it goes to kiosks with the next catalog build`); closeModal(); route();
+  });
+  if ($("#del", m)) $("#del", m).onclick = async () => {
+    if (!confirm(`Delete store ${r.store_id} from the Store table${r.offered ? " and the installer list" : ""}?`)) return;
+    await act(() => api("/stores/delete", { body: { store_id: r.store_id } }), "Deleted"); closeModal(); route();
+  };
+}
+
+function storeImportDialog() {
+  const m = modal(`<h3>Import stores from seed data</h3>
+    <p class="muted">Replaces the Store, Banner and Market tables with those in a seed's profile.data. The seed is a revision of the
+      <code>dvd-data</code> repository (every data zip imported on <a href="#/packages">Data zips</a> adds one). Titles, box art and barcodes are not touched;
+      stores edited here are overwritten.</p>
+    <form id="if"><label>dvd-data revision <input name="revision" placeholder="the served head (default), or a hash / label"></label>
+      <div class="toolbar mt"><button class="primary">Import</button><button type="button" id="cl">Cancel</button></div></form><div id="ij" class="mt"></div>`);
+  $("#cl", m).onclick = closeModal;
+  const poll = async (job) => {
+    const L = await api("/stores/lookups");
+    const j = L.jobs.find((x) => x.id === job);
+    if (!j) return;
+    $("#ij", m).innerHTML = `<pre>${esc(j.progress.map((p) => p.m).join("\n") || "starting...")}</pre>`;
+    if (j.status === "running") setTimeout(() => poll(job), 2000);
+    else { toast(j.status === "done" ? "Stores imported" : "Import failed", j.status !== "done"); if (j.status === "done") setTimeout(() => { closeModal(); route(); }, 1200); }
+  };
+  $("#if", m).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!confirm("Replace the Store, Banner and Market tables?")) return;
+    const r = await act(() => api("/stores-import", { body: Object.fromEntries(new FormData(e.target)) }));
+    poll(r.job);
+  });
+}
 // ---------------------------------------------------------------------------------- system health
 const bytes = (n) => { n = Number(n || 0); const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0; while (n >= 1024 && i < 4) { n /= 1024; i++; } return `${n.toFixed(i ? 1 : 0)} ${u[i]}`; };
 const dur = (s) => { s = Number(s || 0); const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60); return d ? `${d} d ${h} h` : h ? `${h} h ${m} min` : `${m} min`; };

@@ -260,3 +260,72 @@ def test_import_edit_build(tmp_path):
         await db.execute("DELETE FROM cloud_products WHERE from_catalog")
         await db.execute("DELETE FROM catalog_state")
     run(scenario())
+
+
+SEED_STORES = {
+    "Banner": [("1282", '{ banner_id = 1282 , banner_name = "Wegmans" }')],
+    "Market": [("125", '{ market_id = 125 , market_name = "Erie, PA" }')],
+    "Store": [("10000", '{ store_id = 10000 , address = "6143 Peach St Erie, PA 16509-3441" , return_time = "09:00PM" , '
+                        'rental_tax_rate = 6 , purchase_tax_rate = 6 , purchase_price = 5 , vendor_id = nil , market_id = 125 , '
+                        'banner_id = 1282 , sell_thru = true , open_date = "20070610120000" , inv_sync = false , '
+                        'address1 = "6143 Peach St" , address2 = nil , city = "Erie" , county = "Erie County" , state = "PA" , '
+                        'zip = "16509-3441" , collection_method = 6 , digital_purchase_tax_rate = nil , service_fee = nil , '
+                        'service_fee_tax_rate = 6 , return_only_mode_date = nil }')],
+}
+
+
+@pytest.mark.skipif(not cc.database_available(), reason="DATABASE_URL not reachable")
+def test_stores_import_edit_offer_build(tmp_path):
+    from vistadb3.writer import ColumnDef, DatabaseWriter
+    from redbox_backend import db
+    from redbox_backend.catalog import store, stores
+
+    async def scenario():
+        src = await db.fetchval("SELECT source FROM catalog_state WHERE id=1")
+        if src and not src.startswith("test:"):
+            pytest.skip(f"a real catalog is imported ({src}); not replacing it")
+        (tmp_path / "in").mkdir()
+        make_catalog(tmp_path / "in")
+        await store.import_files(tmp_path / "in" / "profile.data", tmp_path / "in" / "inventory.data", "test:synthetic")
+        # a seed's profile.data with its own stores, banners and markets: only those three tables are taken
+        (tmp_path / "seed").mkdir()
+        with DatabaseWriter(str(tmp_path / "seed" / "profile.data"), page_size=1, lcid=1033, case_sensitive=True) as w:
+            for name, rows in SEED_STORES.items():
+                w.create_table(name, [ColumnDef(n, t, m, a) for n, t, m, a in KV], primary_key="Key", primary_key_name="IX_Key")
+                for k, v in rows:
+                    w.insert(name, [k, v])
+        res = await stores.import_tables(folder=tmp_path / "seed")
+        assert res["rows"] == {"Banner": 1, "Market": 1, "Store": 1}
+        assert await db.fetchval("SELECT count(*) FROM catalog_rows WHERE tbl='ProductCatalog'") == 2   # untouched
+        assert await db.fetchval("SELECT value->>'market_name' FROM catalog_rows WHERE tbl='Market' AND key='125'") == "Erie, PA"
+
+        # a new store, banner and market, offered to the kiosk installer
+        mkt = await stores.save_named(stores.MARKET, None, "Test Market")
+        sid = 990900
+        v = await stores.save_store({"store_id": sid, "address1": "10 Test Way", "city": "Erie", "state": "pa", "zip": "16509",
+                                     "market_id": mkt, "banner_id": 1282, "rental_tax_rate": "6.5", "open_date": "20260101"})
+        assert v["address"] == "10 Test Way Erie, PA 16509" and v["rental_tax_rate"] == 6.5 and v["open_date"] == "20260101000000"
+        with pytest.raises(stores.StoreError):
+            await stores.save_store({"store_id": sid, "market_id": 99999})
+        await stores.set_offer(sid, True, due_time="9:00 PM")
+        try:
+            i = await db.fetchrow("SELECT * FROM cloud_installer_kiosks WHERE id=%s", sid)
+            assert (i["state_name"], i["state_id"], i["banner_name"], i["market_name"], i["pending"]) == \
+                ("Pennsylvania", stores.STATE_IDS["PA"], "Wegmans", "Test Market", True)
+            assert await db.fetchval("SELECT ops_market FROM cloud_kiosk_locations WHERE kiosk_id=%s", sid) == "Test Market"
+            # renaming the market follows through to the installer entry
+            await stores.save_named(stores.MARKET, mkt, "Renamed Market")
+            assert await db.fetchval("SELECT market_name FROM cloud_installer_kiosks WHERE id=%s", sid) == "Renamed Market"
+
+            # built into profile.data in the real layout, next to the imported store
+            await store.build(tmp_path / "out")
+            rows = dump(tmp_path / "out" / "profile.data")
+            built = dict(rows["Store"])
+            assert built["10000"] == SEED_STORES["Store"][0][1]
+            assert built[str(sid)].startswith(f'{{ store_id = {sid} , address = "10 Test Way Erie, PA 16509" , return_time = "09:00PM" ,')
+            assert f"market_id = {mkt} , banner_id = 1282" in built[str(sid)]
+            assert dict(rows["Market"])[str(mkt)] == f'{{ market_id = {mkt} , market_name = "Renamed Market" }}'
+        finally:
+            await stores.delete_store(sid)
+            await db.execute("DELETE FROM cloud_kiosk_locations WHERE kiosk_id=%s", sid)
+    run(scenario())
