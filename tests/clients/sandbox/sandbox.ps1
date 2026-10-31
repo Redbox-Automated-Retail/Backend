@@ -138,7 +138,7 @@ switch ($Command) {
     Set-Content (Join-Path $control "store-id.txt") $StoreId
 
     Step "rb-reprovision and this kiosk's settings file (step 40 applies it)"
-    & (Join-Path $backend "kiosk\reprovision\build.ps1") -Out (Join-Path $tools "reprovision")
+    & (Join-Path $backend "software\src\Tools\Reprovision\build.ps1") -Out (Join-Path $tools "reprovision")
     # The hosts address is filled in inside the sandbox (--address), where the Default Switch address is known.
     $profilePath = Join-Path $control "kiosk-profile.json"
     cmd /c "`"$wslc`" exec -e LOG_LEVEL=WARNING rb-updatesvc python -m redbox_backend admin kiosk-profile $StoreId --address 0.0.0.0 > `"$profilePath`""

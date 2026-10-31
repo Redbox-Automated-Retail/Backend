@@ -453,7 +453,7 @@ async def ca_download():
 @router.get("/api/provisioning/installer/{kiosk_id}.json")
 async def installer_settings(kiosk_id: int, kiosk_type: str = "R630", data_zip: str = "data.zip",
                              test_mode: bool = False, address: Optional[str] = None):
-    """settings.json for provisioning/installer/Install-Kiosk.ps1 (the other keys keep the script's defaults)."""
+    """settings.json for software/installer/cli/Install-Kiosk.ps1 (the other keys keep the script's defaults)."""
     doc = {"StoreId": kiosk_id, "DataZip": data_zip, "KioskType": kiosk_type, "Environment": "Production",
            "TestMode": test_mode, "Reboot": not test_mode,
            "Backend": {"ProfileFile": f"kiosk-{kiosk_id}.json", "Address": address or None,

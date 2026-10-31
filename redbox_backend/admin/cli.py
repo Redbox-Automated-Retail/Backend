@@ -74,7 +74,7 @@ Kiosk configuration (configuration.json via the Update Client):
   kconfig-set <Category> <Setting> <value> [--type string] [--kiosk K | --market M] [--rank R]
   kconfig-list [--kiosk K]
 
-Kiosk reprovisioning (kiosk/reprovision, rb-reprovision apply <file> on the kiosk):
+Kiosk reprovisioning (software/src/Tools/Reprovision, rb-reprovision apply <file> on the kiosk):
   kiosk-profile <kiosk id> (--address IP | --base-domain D) [--market M] [--rewrite OLD=NEW ...] [--no-ca]
                [--broker-port P] > kiosk-<id>.json
 

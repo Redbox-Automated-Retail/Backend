@@ -1,4 +1,4 @@
-"""Settings files for kiosk/reprovision (no backend needed)."""
+"""Settings files for software/src/Tools/Reprovision (no backend needed)."""
 import json
 
 from redbox_backend import certs, config, kioskprofile

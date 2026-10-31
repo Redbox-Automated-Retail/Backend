@@ -206,11 +206,11 @@ only; use `--rewrite OLD=NEW` to change host names on the way in.
 The defaults keep the **original Redbox host names**, so a kiosk needs hosts entries, the CA, and its
 configuration put back to the shipped Redbox values (the image's `.staged_` copies hold them).
 
-**`kiosk/reprovision`** does steps 1-3 in one go on the kiosk, and can undo them. Get the kiosk's settings
-file from the dashboard (Kiosks, then Reprovision a kiosk) or with `admin kiosk-profile <id> --address <ip>`.
-Then run `rb-reprovision show` / `apply` / `revert` on the kiosk, elevated. See
-[kiosk/reprovision/README.md](kiosk/reprovision/README.md). The steps below are what it does, for doing them
-by hand.
+**`rb-reprovision`** (in the Software repository, `software/src/Tools/Reprovision`) does steps 1-3 in one go on
+the kiosk, and can undo them. Get the kiosk's settings file from the dashboard (Kiosks, then Reprovision a kiosk)
+or with `admin kiosk-profile <id> --address <ip>`. Then run `rb-reprovision show` / `apply` / `revert` on the
+kiosk, elevated. See [software/src/Tools/Reprovision/README.md](software/src/Tools/Reprovision/README.md). The
+steps below are what it does, for doing them by hand.
 
 1. **Hosts file** (`C:\Windows\System32\drivers\etc\hosts`), with `<ip>` the backend server's address:
 
@@ -275,23 +275,19 @@ by hand.
    activates the seed, and updatemgrd polls from those heads. Import the seeds (below) and such a kiosk is
    brought from its seed's revisions up to the served head.
 
-## Setting up a new kiosk (`provisioning/installer`)
+## Setting up a new kiosk
 
-`provisioning/installer/Install-Kiosk.ps1` is an open replacement for Redbox's store installer (decompiled and
-documented in `software/docs/systems/store-installer.md`). Given a data zip, this backend's kiosk profile
-(`admin kiosk-profile`) and a KioskShell build, it provisions a fresh Windows 10/11 PC:
+The kiosk installers are in the Software repository (the `software/` submodule), next to Redbox's decompiled
+store installer. Both take a data zip, this backend's kiosk profile (`admin kiosk-profile`, or the dashboard) and
+a KioskShell build, and turn a fresh Windows 10/11 PC into a kiosk on this backend:
 
-- prerequisites;
-- the seed through the update store, activated by the kiosk's own update code;
-- the engine settings;
-- `kiosk/reprovision` for every backend setting;
-- the services;
-- the kiosk user, autologon and shell;
-- the original's hardening.
+- `software/installer/classic`: Redbox's own store installer (the wizard), modernized for .NET 4.8 and Windows
+  10/11. See `software/installer/classic/README.md`.
+- `software/installer/cli`: `Install-Kiosk.ps1`, a command-line installer that does the same steps. See
+  `software/installer/cli/README.md`.
 
-The BIOS and card-reader steps are optional, and a test mode covers VMs and Windows Sandbox.
-`New-InstallerPayload.ps1` collects everything for one kiosk in one folder. `tests/sandbox.ps1` runs the installer,
-or Redbox's original one for comparison, in Windows Sandbox. See `provisioning/installer/README.md`.
+`tests/installer/sandbox.ps1` runs either one, or Redbox's original installer for comparison, in Windows Sandbox
+against this backend. See [tests/installer/README.md](tests/installer/README.md).
 
 ## Update packages (Redbox update-store seeds)
 

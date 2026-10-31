@@ -1,7 +1,7 @@
-"""Per-kiosk settings for the reprovisioning tool (kiosk/reprovision, `rb-reprovision apply <file>`).
+"""Per-kiosk settings for the reprovisioning tool (software/src/Tools/Reprovision, `rb-reprovision apply <file>`).
 
 `profile(kiosk_id, address, ...)` returns the JSON document the tool reads (format 1, see
-kiosk/reprovision/README.md). With the default host names every URL keeps the original Redbox name and the
+software/src/Tools/Reprovision/README.md). With the default host names every URL keeps the original Redbox name and the
 hosts file maps those names to `address`; with `base_domain` the URLs use `<service>.<base_domain>` names that
 the kiosk resolves itself (DNS), and no hosts entries are written.
 """
