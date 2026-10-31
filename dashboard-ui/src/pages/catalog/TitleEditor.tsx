@@ -1,8 +1,8 @@
-﻿// The full title editor (a drawer): every field, OMDb lookup for new titles, box art, product groups, barcodes, raw Lua, delete.
+// The title editor (a modal): every field, OMDb lookup for new titles, box art, product groups, barcodes, raw Lua, delete.
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Alert, Box, Button, Checkbox, Divider, Drawer, FileInput, Group, NumberInput, Paper, Select, SimpleGrid, Skeleton, Stack, Tabs, TagsInput, Text, TextInput, Textarea,
+  Alert, Box, Button, Checkbox, Divider, FileInput, Grid, Group, Modal, NumberInput, Paper, Select, SimpleGrid, Skeleton, Stack, Tabs, TagsInput, Text, TextInput, Textarea,
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
 import { zodResolver } from "mantine-form-zod-resolver";
@@ -71,7 +71,15 @@ export function TitleEditor({ pid, opened, onClose, onCreated, onDeleted }: {
   useEffect(() => setTab("details"), [pid]);
   const title = pid == null ? "New title" : d.data ? `${d.data.value.long_name || "Title"} (${pid})` : `Title ${pid}`;
   return (
-    <Drawer opened={opened} onClose={onClose} position="right" size="lg" title={<Text fw={800} size="lg">{title}</Text>}>
+    <Modal opened={opened} onClose={onClose} size={1080} title={<Text fw={800} size="lg">{title}</Text>} centered={false} yOffset="4vh">
+      <Grid gutter="lg">
+        {pid != null && d.data && L.data && (
+          <Grid.Col span={{ base: 12, sm: 3 }} visibleFrom="sm">
+            <Box style={{ position: "sticky", top: 0 }}><ArtBox L={L.data} row={{ product_id: pid, long_name: d.data.value.long_name || "",
+              product_type_id: Number(d.data.value.product_type_id), release_date: d.data.value.release_date || null, image_file: d.data.value.image_file || null }} big /></Box>
+          </Grid.Col>
+        )}
+        <Grid.Col span={{ base: 12, sm: pid != null ? 9 : 12 }}>
       {!L.data || (pid != null && d.isPending) ? <Stack>{Array.from({ length: 8 }, (_, i) => <Skeleton key={i} h={40} />)}</Stack>
         : pid != null && d.isError ? <ErrorState error={d.error} onRetry={() => d.refetch()} />
         : pid == null ? <DetailsForm key="new" pid={null} v={{}} L={L.data} onCreated={onCreated} />
@@ -94,7 +102,9 @@ export function TitleEditor({ pid, opened, onClose, onCreated, onDeleted }: {
             <Tabs.Panel value="lua"><RawLua key={`${pid}:${d.dataUpdatedAt}`} pid={pid} lua={d.data!.lua} /></Tabs.Panel>
           </Tabs>
         )}
-    </Drawer>
+        </Grid.Col>
+      </Grid>
+    </Modal>
   );
 }
 
