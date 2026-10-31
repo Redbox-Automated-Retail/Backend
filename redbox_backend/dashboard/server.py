@@ -1347,6 +1347,11 @@ async def catalog_import(body: dict):
     from ..catalog import store
     folder = (body.get("folder") or "").strip()
     if folder:
+        if folder.lower().endswith(".zip") or pathlib.Path(folder).is_file():
+            # a seed (data-<date>.zip) holds dvd-data as Update Service revisions, not as the two files
+            raise HTTPException(400, f"{folder} is a file, not a folder. To use a seed's catalog, import the seed on Data zips"
+                                     " (or rb.ps1 import-packages) and leave this field empty: the catalog is then imported"
+                                     " from the dvd-data that seed brought in (or name a dvd-data revision instead)")
         if not (pathlib.Path(folder) / store.PROFILE).is_file():
             raise HTTPException(400, f"no profile.data in {folder} (a folder inside the rb-admin container)")
         job = await _background(f"catalog import {folder}", body, lambda p: store.import_folder(folder, p))
