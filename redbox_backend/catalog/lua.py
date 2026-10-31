@@ -141,6 +141,8 @@ def decode(text):
 
 
 def _string(s):
+    if s.endswith("\\") or '\\"' in s:
+        raise LuaError(f"{s[:40]!r}...: the engine cannot read a backslash before a quote or at the end of a string")
     s = s.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\\r\\n")
     return '"' + s.replace('"', '\\"') + '"'
 
