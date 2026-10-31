@@ -10,6 +10,7 @@ import asyncio
 import datetime as dt
 import logging
 import os
+import uuid
 import pathlib
 
 from psycopg.rows import tuple_row
@@ -153,6 +154,7 @@ async def _import_inventory(path, progress):
             await conn.execute("CREATE TEMP TABLE catalog_keep ON COMMIT DROP AS"
                                " SELECT * FROM cloud_barcodes WHERE source <> 'catalog'")
             await conn.execute("TRUNCATE cloud_barcodes, catalog_barcode_dups")
+            await conn.execute("DROP INDEX IF EXISTS cloud_barcodes_product_idx")
             async with conn.cursor() as cur:
                 async with cur.copy("COPY cloud_barcodes (barcode, product_id, status, rental_count, source)"
                                     " FROM STDIN") as copy:
@@ -182,6 +184,8 @@ async def _import_inventory(path, progress):
                 " product_id = EXCLUDED.product_id, status = EXCLUDED.status, rental_count = EXCLUDED.rental_count,"
                 " source = EXCLUDED.source, updated_at = EXCLUDED.updated_at")
             await conn.execute("DELETE FROM catalog_barcode_dups d USING catalog_keep k WHERE k.barcode = d.barcode")
+            await progress("indexing barcodes by title")
+            await conn.execute("CREATE INDEX cloud_barcodes_product_idx ON cloud_barcodes (product_id)")
     await progress(f"inventory.data: {n:,} barcodes, {len(dups)} repeated records")
     return n + len(dups)
 
@@ -272,8 +276,11 @@ async def _stamp_if_changed():
 
 def _write_profile(path, state, tables, rows, images):
     _, _, writer = _vistadb()
+    # The replica id is the only thing in the file not taken from the catalog: derive it from the stamp, so a
+    # catalog without changes builds the same bytes (and publishing it again adds no revision).
+    replica = uuid.uuid5(uuid.NAMESPACE_URL, f"redbox-catalog:{state['stamped_at']}")
     with writer.DatabaseWriter(str(path), page_size=state["page_size"], lcid=state["lcid"],
-                               case_sensitive=state["case_sensitive"], overwrite=True) as w:
+                               case_sensitive=state["case_sensitive"], overwrite=True, replica_id=replica) as w:
         for t in tables:
             s = t["schema"]
             cols = [writer.ColumnDef(c["name"], c["type"], c["max_length"] if c["type"] in _CHAR_TYPES else 0,

@@ -57,6 +57,11 @@ DO $$ BEGIN
     END IF;
 END $$;
 
+-- Barcodes of a title (dashboard, deleting a title). catalog-import drops it while it loads and builds it again.
+CREATE INDEX IF NOT EXISTS cloud_barcodes_product_idx ON cloud_barcodes (product_id);
+-- The few barcodes added here or learned from kiosks (dashboard list, counts), without scanning the catalog's.
+CREATE INDEX IF NOT EXISTS cloud_barcodes_local_idx ON cloud_barcodes (updated_at) WHERE source <> 'catalog';
+
 -- Real inventory.data files repeat a few barcodes; the earlier records are kept here so an unedited catalog is
 -- written back byte for byte (they come before the cloud_barcodes record of the same barcode).
 CREATE TABLE IF NOT EXISTS catalog_barcode_dups (

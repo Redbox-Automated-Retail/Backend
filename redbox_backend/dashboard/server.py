@@ -1108,6 +1108,259 @@ async def configfile_edit(oid: int, body: dict):
     return ok({"generation": gen})
 
 
+# ------------------------------------------------------------------------------------------ catalog
+
+def _catalog_error(e):
+    from ..catalog import edit, inventory, lua
+    if isinstance(e, (edit.EditError, inventory.InventoryError, lua.LuaError, ValueError)):
+        return HTTPException(400, str(e))
+    return e
+
+
+async def _catalog_call(coro):
+    try:
+        return await coro
+    except Exception as e:
+        raise _catalog_error(e)
+
+
+def _background(source, options, fn):
+    """Run fn(progress) as a job in upd_import_jobs (shown with the package jobs). Returns the job id."""
+    async def start():
+        job = await db.fetchval("INSERT INTO upd_import_jobs (source, options) VALUES (%s,%s) RETURNING id",
+                                source, db.jsonb(options))
+
+        async def progress(msg):
+            await db.execute("UPDATE upd_import_jobs SET progress = progress || %s WHERE id=%s",
+                             db.jsonb([{"t": dt.datetime.now(dt.timezone.utc).isoformat(), "m": str(msg)}]), job)
+
+        async def run():
+            try:
+                res = await fn(progress)
+                await progress(json.dumps(res, default=str)[:2000])
+                await db.execute("UPDATE upd_import_jobs SET status='done', finished_at=now() WHERE id=%s", job)
+            except Exception as e:
+                log.exception("%s failed", source)
+                await progress(f"failed: {e}")
+                await db.execute("UPDATE upd_import_jobs SET status='failed', finished_at=now() WHERE id=%s", job)
+        task = asyncio.create_task(run())
+        _import_tasks.add(task)
+        task.add_done_callback(_import_tasks.discard)
+        return job
+    return start()
+
+
+@app.get("/api/catalog")
+async def catalog_status():
+    from ..catalog import store
+    return ok({
+        "state": await db.fetchrow("SELECT source, imported_at, changed_at, stamped_at, last_build FROM catalog_state WHERE id=1"),
+        "tables": await db.fetch("SELECT t.name, t.ord, CASE WHEN t.name = 'Cache' THEN (SELECT count(*) FROM catalog_images)"
+                                 " ELSE (SELECT count(*) FROM catalog_rows r WHERE r.tbl = t.name) END AS rows"
+                                 " FROM catalog_tables t ORDER BY t.ord"),
+        "images": await db.fetchval("SELECT count(*) FROM catalog_images"),
+        # an estimate for the ~26 million imported ones; exact for the few added here or learned from kiosks
+        "barcodes": [{"source": "in all (estimate)", "n": int(await db.fetchval(
+            "SELECT reltuples FROM pg_class WHERE oid = 'cloud_barcodes'::regclass") or 0)}] + await db.fetch(
+            "SELECT source, count(*) AS n FROM cloud_barcodes WHERE source <> 'catalog' GROUP BY source ORDER BY source"),
+        "repo": await db.fetchrow("SELECT r.name, r.serve_head, (SELECT hash FROM upd_revisions v WHERE v.repo = r.name"
+                                  " ORDER BY seq DESC LIMIT 1) AS head FROM upd_repositories r WHERE r.name = %s", store.REPO),
+        "markets": [r["market"] for r in await db.fetch("SELECT DISTINCT market FROM kiosks WHERE market IS NOT NULL"
+                                                        " AND market <> '' ORDER BY market")],
+        "jobs": await db.fetch("SELECT * FROM upd_import_jobs WHERE source LIKE 'catalog%%' ORDER BY id DESC LIMIT 10"),
+        "omdb": bool(os.environ.get("OMDB_API_KEY"))})
+
+
+@app.get("/api/catalog/lookups")
+async def catalog_lookups():
+    async def table(name):
+        return [dict(r["value"] or {}, key=r["key"]) for r in
+                await db.fetch("SELECT key, value FROM catalog_rows WHERE tbl=%s ORDER BY ord", name)]
+    return ok({"types": await table("ProductType"), "ratings": await table("ProductRating"),
+               "genres": await table("Genres"), "families": await table("ProductFamily")})
+
+
+@app.get("/api/catalog/titles")
+async def catalog_titles(q: Optional[str] = None, limit: int = 50, offset: int = 0):
+    from ..catalog import edit
+    return ok(await edit.search_titles(q, min(limit, 500), offset))
+
+
+@app.get("/api/catalog/titles/{pid}")
+async def catalog_title(pid: int):
+    from ..catalog import edit
+    row = await edit.get_row(edit.TITLES, pid)
+    if row is None:
+        raise HTTPException(404)
+    return ok({"product_id": pid, "lua": row["lua"], "value": row["value"], "groups": await edit.groups_of(pid),
+               "barcodes": await db.fetch("SELECT barcode, status, rental_count, source FROM cloud_barcodes"
+                                          " WHERE product_id=%s ORDER BY barcode LIMIT 200", pid),
+               "barcode_count": await db.fetchval("SELECT count(*) FROM cloud_barcodes WHERE product_id=%s", pid)})
+
+
+@app.post("/api/catalog/titles")
+async def catalog_title_save(body: dict):
+    """body: {"product_id": id or null (new), "fields": {...}} or {"product_id": id, "lua": text}."""
+    from ..catalog import edit, store
+    pid = body.get("product_id")
+    if body.get("lua"):
+        if pid is None:
+            raise HTTPException(400, "product_id is needed with lua")
+        await _catalog_call(edit.put_row(edit.TITLES, int(pid), text=body["lua"]))
+        await store.refresh_products()
+    else:
+        pid = await _catalog_call(edit.save_title(body.get("fields") or {}, pid))
+    await db.record_event(None, "dashboard", "catalog-title", {"product_id": pid})
+    return ok({"product_id": pid})
+
+
+@app.post("/api/catalog/titles/{pid}/delete")
+async def catalog_title_delete(pid: int, body: dict):
+    from ..catalog import edit
+    res = await _catalog_call(edit.delete_title(pid, barcodes=bool(body.get("barcodes"))))
+    await db.record_event(None, "dashboard", "catalog-title-delete", res)
+    return ok(res)
+
+
+@app.post("/api/catalog/titles/{pid}/image")
+async def catalog_title_image(pid: int, file: Optional[UploadFile] = File(None), url: str = Form("")):
+    from ..catalog import edit
+    data = await file.read() if file is not None and file.filename else \
+        await _catalog_call(edit.fetch_image(url)) if url else None
+    if not data:
+        raise HTTPException(400, "give an image file or URL")
+    return ok({"image_file": await _catalog_call(edit.put_image(data, pid))})
+
+
+@app.get("/api/catalog/images/{name}")
+async def catalog_image(name: str):
+    from ..catalog import edit
+    data = await edit.image_bytes(name)
+    if data is None:
+        raise HTTPException(404)
+    kind = {".png": "image/png", ".gif": "image/gif"}.get(pathlib.PurePath(name).suffix.lower(), "image/jpeg")
+    return Response(data, media_type=kind)
+
+
+@app.post("/api/catalog/omdb")
+async def catalog_omdb(body: dict):
+    from ..catalog import edit
+    return ok(await _catalog_call(edit.omdb_lookup(body.get("title"), body.get("year"), body.get("imdb_id"))))
+
+
+@app.get("/api/catalog/groups")
+async def catalog_groups(q: Optional[str] = None, product_id: Optional[int] = None, limit: int = 100):
+    where, args = "", []
+    if product_id:
+        where, args = " AND value->'product_id_list' @> %s", [db.jsonb([product_id])]
+    elif q:
+        where, args = " AND (key = %s OR value->>'product_group_name' ILIKE %s)", [q.strip(), f"%{q}%"]
+    return ok(await db.fetch("SELECT key::bigint AS product_group_id, value FROM catalog_rows WHERE tbl='ProductGroup'"
+                             + where + " ORDER BY key::bigint DESC LIMIT %s", *args, min(limit, 500)))
+
+
+@app.post("/api/catalog/groups")
+async def catalog_group_save(body: dict):
+    from ..catalog import edit
+    gid = await _catalog_call(edit.save_group(body.get("product_group_id"), body.get("name"),
+                                              body.get("type") or 1, body.get("product_ids") or []))
+    await db.record_event(None, "dashboard", "catalog-group", {"product_group_id": gid})
+    return ok({"product_group_id": gid})
+
+
+@app.post("/api/catalog/groups/{gid}/delete")
+async def catalog_group_delete(gid: int):
+    from ..catalog import edit
+    await _catalog_call(edit.delete_group(gid))
+    return ok({"deleted": gid})
+
+
+@app.get("/api/catalog/barcodes")
+async def catalog_barcodes(q: Optional[str] = None, product_id: Optional[int] = None, limit: int = 100):
+    if product_id:
+        rows = await db.fetch("SELECT * FROM cloud_barcodes WHERE product_id=%s ORDER BY barcode LIMIT %s",
+                              product_id, min(limit, 1000))
+    elif q:
+        rows = await db.fetch("SELECT * FROM cloud_barcodes WHERE barcode >= %s ORDER BY barcode LIMIT %s",
+                              q.strip(), min(limit, 1000))
+    else:
+        rows = await db.fetch("SELECT * FROM cloud_barcodes WHERE source <> 'catalog' ORDER BY updated_at DESC LIMIT %s",
+                              min(limit, 1000))
+    return ok(rows)
+
+
+@app.post("/api/catalog/barcodes")
+async def catalog_barcode_save(body: dict):
+    from ..catalog import edit
+    row = await _catalog_call(edit.set_barcode(body["barcode"], body["product_id"], body.get("status") or 0))
+    await db.record_event(None, "dashboard", "catalog-barcode", {"barcode": body["barcode"], "product_id": body["product_id"]})
+    return ok(row)
+
+
+@app.post("/api/catalog/barcodes/delete")
+async def catalog_barcode_delete(body: dict):
+    from ..catalog import edit
+    return ok({"deleted": await edit.delete_barcode(body["barcode"])})
+
+
+@app.get("/api/catalog/rows/{table}")
+async def catalog_rows(table: str, q: Optional[str] = None, limit: int = 100, offset: int = 0):
+    where, args = "", []
+    if q:
+        where, args = " AND (key = %s OR lua ILIKE %s)", [q, f"%{q}%"]
+    base = " FROM catalog_rows WHERE tbl=%s" + where
+    return ok({"total": await db.fetchval("SELECT count(*)" + base, table, *args),
+               "rows": await db.fetch("SELECT key, lua" + base + " ORDER BY ord LIMIT %s OFFSET %s", table, *args,
+                                      min(limit, 1000), offset)})
+
+
+@app.put("/api/catalog/rows/{table}/{key}")
+async def catalog_row_save(table: str, key: str, body: dict):
+    from ..catalog import edit, store
+    await _catalog_call(edit.put_row(table, key, text=str(body.get("lua") or "").strip()))
+    if table in ("ProductCatalog", "ProductGroup", "ProductType"):
+        await store.refresh_products()
+    await db.record_event(None, "dashboard", "catalog-row", {"table": table, "key": key})
+    return ok({"saved": key})
+
+
+@app.post("/api/catalog/rows/{table}/{key}/delete")
+async def catalog_row_delete(table: str, key: str):
+    from ..catalog import edit
+    return ok({"deleted": await edit.delete_row(table, key)})
+
+
+@app.post("/api/catalog/import")
+async def catalog_import(body: dict):
+    """body: {"folder": path inside the container} or {"revision": dvd-data hash/label or null (served head)}."""
+    from ..catalog import store
+    folder = (body.get("folder") or "").strip()
+    if folder:
+        if not (pathlib.Path(folder) / store.PROFILE).is_file():
+            raise HTTPException(400, f"no profile.data in {folder} (a folder inside the rb-admin container)")
+        job = await _background(f"catalog import {folder}", body, lambda p: store.import_folder(folder, p))
+    else:
+        rev = body.get("revision") or None
+        job = await _background(f"catalog import {store.REPO}@{rev or 'served head'}", body,
+                                lambda p: store.import_repository(store.REPO, rev, p))
+    await db.record_event(None, "dashboard", "catalog-import", {"job": job, **body})
+    return ok({"job": job})
+
+
+@app.post("/api/catalog/publish")
+async def catalog_publish(body: dict):
+    """body: {"scope": "all" | "market" | "store", "target": market or store number, "label": ...}."""
+    from ..catalog import publish as cpub
+    scope, target = body.get("scope") or "all", (str(body.get("target") or "").strip() or None)
+    if scope not in ("all", "market", "store") or (scope != "all" and not target):
+        raise HTTPException(400, "scope all, or market / store with a target")
+    job = await _background(f"catalog publish {scope} {target or ''}".strip(), body,
+                            lambda p: cpub.publish(scope, target, body.get("label") or None, progress=p,
+                                                   actor=f"dashboard:{auth.username()}"))
+    await db.record_event(None, "dashboard", "catalog-publish", {"job": job, **body})
+    return ok({"job": job})
+
+
 # -------------------------------------------------------------------------------------- remote jobs
 
 COMMANDS = {
