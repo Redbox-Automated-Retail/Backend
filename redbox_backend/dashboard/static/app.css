@@ -26,6 +26,7 @@ input, select, textarea { font: inherit; color: var(--text); background: var(--b
 textarea { width: 100%; min-height: 70px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
 label { display: block; margin: 8px 0; }
 label > input, label > select, label > textarea { display: block; width: 100%; margin-top: 4px; }
+label > input[type=checkbox], label > input[type=radio] { display: inline; width: auto; margin: 0 6px 0 0; vertical-align: middle; }
 .login { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
 .login-card { width: 340px; }
 .shell { display: grid; grid-template-columns: 210px 1fr; min-height: 100vh; }

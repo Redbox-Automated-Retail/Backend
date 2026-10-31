@@ -3,7 +3,8 @@
 A single-page web UI (static/) over a JSON API on the same database the services use, so every edit is what
 the kiosks get on their next call. Actions that have to reach a kiosk now (push configuration, deploy a file
 set, remote jobs) go through rb-iot's operator API (IOT_ADMIN_URL). Every route under /api except /api/login
-needs the admin session; changing requests also need the header `X-Requested-With: rb-admin`.
+needs the admin session; changing requests also need the header `X-Requested-With: rb-admin`. Routes under
+/api/ci/ (releases from CI, docs/releases.md) take an `Authorization: Bearer` API token instead.
 """
 import argparse
 import asyncio
@@ -26,9 +27,9 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFi
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .. import blobs, certs, config, db, filesets, kioskprofile
+from .. import apitokens, blobs, certs, config, db, filesets, kioskprofile
 from ..iot import kioskconfig
-from ..updatesvc import repo
+from ..updatesvc import releases, repo
 from . import auth
 
 log = logging.getLogger("dashboard")
@@ -61,10 +62,25 @@ async def _startup():
         log.warning("ADMIN_PASSWORD_HASH is not set: nobody can log in (run scripts/rb.ps1 set-admin-password)")
 
 
+def _ci_scope(request):
+    if request.method in ("GET", "HEAD"):
+        return "read"
+    return "publish" if request.url.path == "/api/ci/releases" else "deploy"
+
+
 @app.middleware("http")
 async def _guard(request: Request, call_next):
     path = request.url.path
-    if path.startswith("/api/") and path not in ("/api/login", "/api/status"):
+    if path.startswith("/api/ci/"):
+        # CI clients: a bearer token (apitokens.py) instead of the session cookie; not a browser, so no CSRF header.
+        header = request.headers.get("authorization", "")
+        token = header[7:].strip() if header[:7].lower() == "bearer " else ""
+        row = await apitokens.check(token, _ci_scope(request))
+        if row is None:
+            await asyncio.sleep(0.5)
+            return JSONResponse({"error": f"a token with scope '{_ci_scope(request)}' is required"}, status_code=401)
+        request.state.actor = f"token:{row['name']}"
+    elif path.startswith("/api/") and path not in ("/api/login", "/api/status"):
         if not auth.read_session(request.cookies.get(auth.COOKIE)):
             return JSONResponse({"error": "login required"}, status_code=401)
         if request.method not in ("GET", "HEAD") and request.headers.get("x-requested-with") != "rb-admin":
@@ -440,8 +456,11 @@ async def repos():
         " (SELECT count(*) FROM upd_snapshots s WHERE s.repo = r.name AND s.head_hash = h.hash) AS snapshot_files,"
         " (SELECT count(*) FROM upd_store_heads x WHERE x.repo = r.name AND x.head = h.hash) AS stores_current,"
         " (SELECT count(*) FROM upd_store_heads x WHERE x.repo = r.name) AS stores_reporting"
+        " , h.released, (SELECT count(*) FROM upd_rollouts o WHERE o.repo = r.name) AS rollouts"
         " FROM upd_repositories r LEFT JOIN LATERAL (SELECT * FROM upd_revisions v WHERE v.repo = r.name"
         " ORDER BY seq DESC LIMIT 1) h ON true ORDER BY r.name")
+    for r in rows:
+        r["served"] = await repo.served_head(r["name"])   # differs from head while a release is not rolled out
     return ok(rows)
 
 
@@ -492,8 +511,8 @@ async def snapshot(name: str):
 @app.get("/api/updates/stores")
 async def stores():
     repos_ = [r["name"] for r in await db.fetch("SELECT name FROM upd_repositories ORDER BY name")]
-    heads = {r["name"]: r["hash"] for r in await db.fetch(
-        "SELECT DISTINCT ON (repo) repo AS name, hash FROM upd_revisions ORDER BY repo, seq DESC")}
+    rolled_out = {r["repo"] for r in await db.fetch("SELECT DISTINCT repo FROM upd_rollouts")}
+    heads = {r: await repo.served_head(r) for r in repos_}
     out = []
     for s in await db.fetch("SELECT * FROM upd_stores ORDER BY number"):
         reported = {h["repo"]: h for h in await db.fetch("SELECT * FROM upd_store_heads WHERE number=%s", s["number"])}
@@ -502,7 +521,8 @@ async def stores():
         cells = {}
         for r in repos_:
             h = reported.get(r)
-            state = "current" if h and h["head"] == heads.get(r) else ("behind" if h else "missing")
+            served = await repo.served_head(r, s["number"]) if r in rolled_out else heads[r]
+            state = "current" if h and h["head"] == served else ("behind" if h else "missing")
             cells[r] = {"state": state if r in subscribed else "not subscribed", "reported": h and h["head"],
                         "link": {True: "linked", False: "unlinked"}.get(links.get(r), "auto")}
         out.append({"store": s, "repos": cells})
@@ -850,6 +870,164 @@ async def fileset_deploy(fs_id: int, body: dict):
     if dep["channel"] == "ucs":
         pushed = await iot("/push/deploy", {"deploymentId": dep["id"]})
     await db.record_event(None, "dashboard", "fileset-deploy", {"deployment": dep["id"], "pushed": pushed})
+    return ok({"deployment": dep, "pushed": pushed})
+
+
+# ----------------------------------------------------------------------- releases (dashboard session)
+# The Releases page: the same operations as the admin CLI and the CI API (updatesvc/releases.py, docs/releases.md).
+
+def _actor():
+    return "dashboard:" + auth.username()
+
+
+@app.get("/api/releases")
+async def releases_overview():
+    rows = await db.fetch(
+        "SELECT r.name, n.hash AS newest, n.label AS newest_label, n.version AS newest_version, n.released AS newest_released,"
+        " (SELECT count(*) FROM upd_revisions v WHERE v.repo = r.name AND NOT v.released) AS unreleased,"
+        " (SELECT count(*) FROM upd_rollouts o WHERE o.repo = r.name) AS rollouts"
+        " FROM upd_repositories r LEFT JOIN LATERAL (SELECT * FROM upd_revisions v WHERE v.repo = r.name"
+        " ORDER BY seq DESC LIMIT 1) n ON true ORDER BY r.name")
+    for r in rows:
+        r["served"] = await repo.served_head(r["name"])
+        r["served_label"] = await db.fetchval("SELECT label FROM upd_revisions WHERE repo=%s AND hash=%s", r["name"], r["served"])
+    log_rows = await db.fetch("SELECT l.*, (SELECT label FROM upd_revisions v WHERE v.repo = l.repo AND v.hash = l.head) AS head_label"
+                              " FROM upd_rollout_log l ORDER BY id DESC LIMIT 25")
+    return ok({"repositories": rows, "log": log_rows})
+
+
+@app.get("/api/releases/repo/{name}")
+async def releases_repo(name: str, limit: int = 40):
+    if not await db.fetchval("SELECT 1 FROM upd_repositories WHERE name=%s", name):
+        raise HTTPException(404, "unknown repository")
+    st = await releases.status(name, limit=limit)
+    heads = {h for h in [st["default_head"]] + [o["head"] for o in st["rollouts"]] +
+             [x for l in st["log"] for x in (l["head"], l["previous"])] +
+             [x for s in st["stores"] for x in (s["reported"], s["served"])] if h}
+    st["labels"] = {r["hash"]: {"seq": r["seq"], "label": r["label"], "version": r["version"], "released": r["released"]}
+                    for r in await db.fetch("SELECT hash, seq, label, version, released FROM upd_revisions"
+                                            " WHERE repo=%s AND hash = ANY(%s)", name, list(heads))}
+    st["markets"] = [r["market"] for r in await db.fetch(
+        "SELECT DISTINCT market FROM kiosks WHERE market IS NOT NULL AND market <> '' ORDER BY market")]
+    return ok(st)
+
+
+@app.post("/api/releases/upload")
+async def releases_upload(file: UploadFile = File(...), allow_new: bool = Form(False)):
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        while chunk := await file.read(1 << 20):
+            tmp.write(chunk)
+    try:
+        return ok(await releases.publish_release(tmp.name, allow_new=allow_new, actor=_actor()))
+    finally:
+        os.unlink(tmp.name)
+
+
+@app.post("/api/releases/repo/{name}/rollout")
+async def releases_rollout(name: str, body: dict):
+    store, market = _ci_target(body)
+    return ok(await releases.rollout(name, body.get("revision"), store=store, market=market, actor=_actor()))
+
+
+@app.post("/api/releases/repo/{name}/rollback")
+async def releases_rollback(name: str, body: dict):
+    store, market = _ci_target(body)
+    return ok(await releases.rollback(name, store=store, market=market, to=body.get("to") or None, actor=_actor()))
+
+
+@app.get("/api/releases/tokens")
+async def releases_tokens():
+    return ok(await apitokens.list_all())
+
+
+@app.post("/api/releases/tokens")
+async def releases_token_create(body: dict):
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "give the token a name")
+    if await db.fetchval("SELECT 1 FROM api_tokens WHERE name=%s", name):
+        raise HTTPException(409, f"a token named {name} exists")
+    try:
+        token = await apitokens.create(name, body.get("scopes") or ["publish"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    await db.record_event(None, "dashboard", "api-token-create", {"name": name, "scopes": body.get("scopes")})
+    return ok({"name": name, "token": token})
+
+
+@app.post("/api/releases/tokens/revoke")
+async def releases_token_revoke(body: dict):
+    n = await apitokens.revoke(body.get("name") or "")
+    await db.record_event(None, "dashboard", "api-token-revoke", {"name": body.get("name"), "revoked": n})
+    return ok({"revoked": n})
+
+
+# ------------------------------------------------------------------------------- CI releases (tokens)
+
+def _ci_target(body):
+    """{store} | {market} | {all: true}; everyone has to be asked for explicitly."""
+    store, market = body.get("store"), body.get("market")
+    if not store and not market and body.get("all") is not True:
+        raise HTTPException(400, "give store, market, or all: true")
+    return (str(store) if store else None), (market or None)
+
+
+@app.exception_handler(releases.ReleaseError)
+async def _release_error(request: Request, e: releases.ReleaseError):
+    return JSONResponse({"error": str(e)}, status_code=400)
+
+
+@app.post("/api/ci/releases")
+async def ci_release(request: Request, file: UploadFile = File(...), allow_new: bool = Form(False)):
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        while chunk := await file.read(1 << 20):
+            tmp.write(chunk)
+    try:
+        return ok(await releases.publish_release(tmp.name, allow_new=allow_new, actor=request.state.actor))
+    finally:
+        os.unlink(tmp.name)
+
+
+@app.get("/api/ci/repos/{name}/status")
+async def ci_repo_status(name: str):
+    return ok(await releases.status(name))
+
+
+@app.post("/api/ci/repos/{name}/rollout")
+async def ci_rollout(request: Request, name: str, body: dict):
+    store, market = _ci_target(body)
+    return ok(await releases.rollout(name, body.get("revision"), store=store, market=market, actor=request.state.actor))
+
+
+@app.post("/api/ci/repos/{name}/rollback")
+async def ci_rollback(request: Request, name: str, body: dict):
+    store, market = _ci_target(body)
+    return ok(await releases.rollback(name, store=store, market=market, to=body.get("to"), actor=request.state.actor))
+
+
+@app.get("/api/ci/filesets/{fs_id}/status")
+async def ci_fileset_status(fs_id: int):
+    return ok(await releases.fileset_status(fs_id))
+
+
+@app.post("/api/ci/filesets/{fs_id}/deploy")
+async def ci_fileset_deploy(request: Request, fs_id: int, body: dict):
+    """{revision (0 = remove), kiosk | market | all: true, channel ucs|legacy, window "01:00-05:00"}"""
+    kiosk, market = _ci_target({"store": body.get("kiosk"), "market": body.get("market"), "all": body.get("all")})
+    rev = int(body["revision"])
+    if rev and not await db.fetchval("SELECT 1 FROM fs_revisions WHERE id=%s AND fileset_id=%s", rev, fs_id):
+        raise HTTPException(404, f"file set {fs_id} has no revision {rev}")
+    start, end = (body["window"].split("-", 1) if body.get("window") else (None, None))
+    ttype, target = ("kiosk", kiosk) if kiosk else ("market", market) if market else ("all", None)
+    dep = await filesets.deploy(fs_id, rev or None, ttype, target, body.get("channel", "ucs"),
+                                activate_start=start, activate_end=end)
+    pushed = None
+    if dep["channel"] == "ucs":
+        try:
+            pushed = await iot("/push/deploy", {"deploymentId": dep["id"]})
+        except HTTPException as e:
+            pushed = {"error": e.detail}   # recorded; kiosks still get it on their next report
+    await db.record_event(None, "releases", "fileset-deploy", {"deployment": dep["id"], "actor": request.state.actor})
     return ok({"deployment": dep, "pushed": pushed})
 
 

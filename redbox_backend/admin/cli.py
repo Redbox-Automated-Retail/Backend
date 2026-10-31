@@ -26,6 +26,20 @@ Update Service (legacy updatemgrd):
   config-file-set <oid> <name> <kiosk dir> <json file>   new generation of a config file
   download-file <local file> --name N --dest-dir D [--store S] [--script lua_file]
 
+Releases of our own builds (docs/releases.md):
+  release-publish <release.zip> [--allow-new]
+                                     a build from the Software repository's build/release.ps1: an unreleased
+                                     revision of its repository, or a file-set revision
+  rollout <repo> <hash|label|version> (--store S | --market M | --all)
+                                     serve a revision to one store, a market, or every store
+  rollback <repo> (--store S | --market M | --all) [--to REV]
+                                     back to the previous revision; publishes a revert revision when stores
+                                     already took the newer one (updatemgrd never moves back)
+  release-status <repo> [--json]     revisions, rollouts, and what every store reports against what it is served
+  fileset-status <fs> [--json]       file-set revisions, deployments and kiosk states
+  api-token create <name> [--scope publish|deploy ...] | list | revoke <name>
+                                     bearer tokens for the CI API (/api/ci/* on the dashboard)
+
 File sets (Update Client and updatemgrd):
   fileset-create <id> <name> <version> <dir> --dest 'C:\\...' [--dep FS:MIN[:MAX]]
   fileset-deploy <fs> <rev> [--kiosk K | --market M] [--channel ucs|legacy] [--window 01:00-05:00]
@@ -50,8 +64,8 @@ import pathlib
 import sys
 import urllib.request
 
-from .. import blobs, config, db, filesets, kioskprofile
-from ..updatesvc import editions, repo, seedzip
+from .. import apitokens, blobs, config, db, filesets, kioskprofile
+from ..updatesvc import editions, releases, repo, seedzip
 
 
 def _bool(s):
@@ -330,6 +344,93 @@ async def cmd_check_seed(args):
         sys.exit(1)
 
 
+def _print(obj):
+    print(json.dumps(obj, indent=2, default=str))
+
+
+def _release_target(args):
+    if not (args.store or args.market or args.all):
+        sys.exit("give --store, --market or --all")
+    return args.store, args.market
+
+
+async def cmd_release_publish(args):
+    try:
+        _print(await releases.publish_release(args.zip, allow_new=args.allow_new, actor="admin-cli"))
+    except releases.ReleaseError as e:
+        sys.exit(str(e))
+
+
+async def cmd_rollout(args):
+    store, market = _release_target(args)
+    try:
+        _print(await releases.rollout(args.repo, args.revision, store=store, market=market, actor="admin-cli"))
+    except releases.ReleaseError as e:
+        sys.exit(str(e))
+
+
+async def cmd_rollback(args):
+    store, market = _release_target(args)
+    try:
+        res = await releases.rollback(args.repo, store=store, market=market, to=args.to, actor="admin-cli")
+    except releases.ReleaseError as e:
+        sys.exit(str(e))
+    _print(res)
+    for f in res.get("not_removed") or []:
+        print(f"warning: {f} was added after {res['to']} and stays on the kiosks", file=sys.stderr)
+
+
+async def cmd_release_status(args):
+    st = await releases.status(args.repo, limit=args.limit)
+    if args.json:
+        return _print(st)
+    print(f"{args.repo}: default head {st['default_head']}")
+    print("revisions (newest first):")
+    for r in st["revisions"]:
+        print(f"  {r['seq']:5} {r['hash'][:12]} {'released' if r['released'] else 'unreleased':10}"
+              f" {r['version'] or '':16} {r['label'] or ''}")
+    if st["rollouts"]:
+        print("rollouts:")
+        for o in st["rollouts"]:
+            print(f"  {o['target_type']:6} {o['target']:12} -> {o['head'][:12]}  since {o['created_at']:%Y-%m-%d %H:%M}")
+    print("stores:")
+    for s in st["stores"]:
+        print(f"  {s['store']:10} {s['market'] or '-':12} {s['state']:12} reports {(s['reported'] or '-')[:12]}"
+              f" ({s['reported_label'] or '-'}), served {(s['served'] or '-')[:12]} ({s['served_label'] or '-'})")
+
+
+async def cmd_fileset_status(args):
+    st = await releases.fileset_status(args.fs)
+    if args.json:
+        return _print(st)
+    for r in st["revisions"]:
+        print(f"revision {r['id']:5} {r['version']:16} {r['name']}")
+    for d in st["deployments"]:
+        print(f"deployment {d['id']:5} revision {d['revision_id']} -> {d['target_type']} {d['target'] or ''}"
+              f" ({d['channel']}) {d['created_at']:%Y-%m-%d %H:%M}")
+    for k in st["kiosks"]:
+        print(f"kiosk {k['kiosk_id']} ({k['channel']}): revision {k['revision_id']} {k['version'] or ''}"
+              f" state {k['state']} at {k['updated_at']:%Y-%m-%d %H:%M}")
+
+
+async def cmd_api_token(args):
+    if args.action == "create":
+        if not args.name:
+            sys.exit("api-token create <name>")
+        try:
+            token = await apitokens.create(args.name, args.scope or ["publish"])
+        except ValueError as e:
+            sys.exit(str(e))
+        print(token)
+        print("(shown once; store it as a CI secret, e.g. RB_API_TOKEN)", file=sys.stderr)
+    elif args.action == "list":
+        for t in await apitokens.list_all():
+            print(f"{t['name']:24} {','.join(t['scopes']):24} created {t['created_at']:%Y-%m-%d}"
+                  f" last used {t['last_used_at'] or '-'}{'  REVOKED' if t['revoked_at'] else ''}")
+    else:
+        print(f"revoked {await apitokens.revoke(args.name)} token(s)")
+
+
 async def cmd_kiosk_profile(args):
     if not args.address and not args.base_domain:
         sys.exit("give --address (hosts-file mapping of the Redbox names) or --base-domain (your own DNS names)")
@@ -380,6 +481,23 @@ def parser():
     p = sub.add_parser("download-file"); p.add_argument("file"); p.add_argument("--name", required=True)
     p.add_argument("--dest-dir", required=True); p.add_argument("--store"); p.add_argument("--script")
     p.set_defaults(fn=cmd_download_file)
+    p = sub.add_parser("release-publish"); p.add_argument("zip"); p.add_argument("--allow-new", action="store_true")
+    p.set_defaults(fn=cmd_release_publish)
+    for name, fn in (("rollout", cmd_rollout), ("rollback", cmd_rollback)):
+        p = sub.add_parser(name); p.add_argument("repo")
+        if name == "rollout":
+            p.add_argument("revision", help="hash prefix, label or version")
+        else:
+            p.add_argument("--to", help="hash prefix, label or version (default: what the target had before)")
+        g = p.add_mutually_exclusive_group(); g.add_argument("--store"); g.add_argument("--market")
+        g.add_argument("--all", action="store_true"); p.set_defaults(fn=fn)
+    p = sub.add_parser("release-status"); p.add_argument("repo"); p.add_argument("--limit", type=int, default=10)
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_release_status)
+    p = sub.add_parser("fileset-status"); p.add_argument("fs", type=int); p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_fileset_status)
+    p = sub.add_parser("api-token"); p.add_argument("action", choices=["create", "list", "revoke"])
+    p.add_argument("name", nargs="?"); p.add_argument("--scope", action="append", choices=list(apitokens.SCOPES))
+    p.set_defaults(fn=cmd_api_token)
     p = sub.add_parser("fileset-create"); p.add_argument("id", type=int); p.add_argument("name"); p.add_argument("version")
     p.add_argument("dir"); p.add_argument("--dest", required=True); p.add_argument("--dep", action="append")
     p.set_defaults(fn=cmd_fileset_create)

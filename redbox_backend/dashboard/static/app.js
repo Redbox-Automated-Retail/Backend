@@ -407,7 +407,8 @@ routes.updates = async () => {
 async function repoDialog(r) {
   const d = await api("/updates/repos/" + encodeURIComponent(r.name));
   const m = modal(`<h3>${esc(r.name)}</h3>
-    <form id="pub" class="card"><b>Publish a new revision</b><p class="muted">Unchanged files are skipped; changed ones go out as VCDIFF deltas when smaller. Sub-folders are kept when you pick a folder.</p>
+    <form id="pub" class="card"><b>Publish a new revision</b><p class="muted">Unchanged files are skipped; changed ones go out as VCDIFF deltas when smaller. Sub-folders are kept when you pick a folder.
+        A revision published here is served to every kiosk at once; to publish a build without serving it and roll it out in stages, use <a href="#/releases/${encodeURIComponent(r.name)}">Releases</a>.</p>
       <label>Target folder on the kiosk <input name="target_path" required value="${esc(d.files[0] ? d.files[0].target_path : "C:\\Program Files\\Redbox\\REDS\\")}"></label>
       <label>Label <input name="label" placeholder="${esc(r.name)}-release"></label>
       <label>Files <input type="file" name="files" multiple required></label>
@@ -437,6 +438,162 @@ async function repoDialog(r) {
     await act(() => api(`/updates/repos/${encodeURIComponent(r.name)}/publish`, { form: fd }), (x) => x.revision ? `Published revision ${x.revision.slice(0, 10)} (${x.files} files)` : "No file changed");
     closeModal(); routes.updates();
   });
+}
+
+// --------------------------------------------------------------------------------------- releases
+// Our own builds (docs/releases.md): publish a release zip unreleased, roll it out to a store, a market or everyone,
+// roll back, watch what every store runs; API tokens for CI.
+const revName = (h, labels) => {
+  if (!h) return '<span class="muted">-</span>';
+  const l = labels && labels[h];
+  return `<code title="${esc(h)}">${short(h)}</code>${l && (l.label || l.version) ? " " + esc(l.label || l.version) : ""}`;
+};
+const targetText = (t, n) => (t === "all" ? "everyone" : `${t} ${n}`);
+const releasedPill = (v) => (v ? pill("released", "ok") : pill("unreleased", "warn"));
+
+routes.releases = async (repoName) => {
+  if (repoName) return releaseRepo(decodeURIComponent(repoName));
+  title("Releases");
+  const [d, tokens] = await Promise.all([api("/releases"), api("/releases/tokens")]);
+  view().innerHTML = `<p class="muted">Builds from the Software repository's <code>build/release.ps1</code>. A release is published
+      <b>unreleased</b>: no kiosk gets it until you roll it out to a store, a market or everyone. File-set releases become
+      file-set revisions; deploy those on <a href="#/filesets">File sets</a>.</p>
+    <form id="up" class="card inline"><label>Release zip <input type="file" name="file" accept=".zip" required></label>
+      <label><input type="checkbox" name="allow_new" value="true"> also add files the repository does not have yet</label>
+      <button class="primary">Publish</button></form>
+    <div id="upres"></div>
+    <h3>Repositories</h3>${table(d.repositories, [{ key: "name", label: "Repository" },
+      { key: "served", label: "Served by default", render: (v, r) => `<code>${short(v)}</code> ${esc(r.served_label || "")}` },
+      { key: "newest", label: "Newest revision", render: (v, r) => v ? `<code>${short(v)}</code> ${esc(r.newest_version || r.newest_label || "")} ${releasedPill(r.newest_released)}` : "" },
+      { key: "unreleased", label: "Unreleased" }, { key: "rollouts", label: "Store / market rollouts" }], { onclick: true })}
+    <h3>Recent rollouts and rollbacks</h3>${table(d.log, [{ key: "created_at", label: "When" }, { key: "repo", label: "Repository" },
+      { key: "action" }, { key: "target_type", label: "Target", render: (v, r) => esc(targetText(v, r.target)) },
+      { key: "head", label: "Now served", render: (v, r) => v ? `<code>${short(v)}</code> ${esc(r.head_label || "")}` : "the default" },
+      { key: "actor", label: "By" }], { empty: "Nothing rolled out yet." })}
+    <h3>API tokens (CI)</h3><p class="muted">Bearer tokens for <code>/api/ci/*</code> (<code>scripts/rb-release.py</code>, the Software
+      repository's release workflow). <b>publish</b> uploads releases, <b>deploy</b> rolls out and back; every token can read status.
+      The token is shown once.</p>
+    <form id="tk" class="card inline"><label>Name <input name="name" required placeholder="ci-publish"></label>
+      <label><input type="checkbox" name="scopes" value="publish" checked> publish</label>
+      <label><input type="checkbox" name="scopes" value="deploy"> deploy</label><button class="primary">Create token</button></form>
+    <div class="mt">${table(tokens, [{ key: "name" }, { key: "scopes", render: (v) => esc((v || []).join(", ")) },
+      { key: "created_at", label: "Created" }, { key: "last_used_at", label: "Last used", render: (v) => esc(ago(v)) },
+      { key: "revoked_at", label: "", render: (v, r) => v ? pill("revoked") : `<button class="danger" data-revoke="${esc(r.name)}">Revoke</button>` }],
+      { empty: "No tokens." })}</div>`;
+  bindRows(view(), d.repositories, (r) => { location.hash = "#/releases/" + encodeURIComponent(r.name); });
+  $("#up").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    if (!fd.get("allow_new")) fd.set("allow_new", "false");
+    const btn = $("button", e.target); btn.disabled = true; btn.textContent = "Publishing...";
+    try {
+      const x = await act(() => api("/releases/upload", { form: fd }), (x) => x.fileset ? `File set ${x.fileset} revision ${x.revision} created`
+        : x.revision ? `Published ${x.label} (unreleased)` : "Nothing changed");
+      $("#upres").innerHTML = `<div class="card mt"><div class="kv">${Object.entries(x).map(([k, v]) =>
+        `<div>${esc(k)}</div><div>${Array.isArray(v) ? esc(v.join(", ") || "-") : cell(v)}</div>`).join("")}</div>
+        ${x.repository && x.revision ? `<p><a href="#/releases/${encodeURIComponent(x.repository)}">Roll it out</a></p>` : ""}
+        ${x.fileset ? `<p><a href="#/filesets">Deploy it</a></p>` : ""}</div>`;
+    } finally { btn.disabled = false; btn.textContent = "Publish"; }
+  });
+  $("#tk").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const x = await act(() => api("/releases/tokens", { body: { name: fd.get("name"), scopes: fd.getAll("scopes") } }));
+    const m = modal(`<h3>Token ${esc(x.name)}</h3><p>Copy it now; it is not shown again. Store it as the CI secret
+      <code>RB_API_TOKEN</code>.</p><pre id="tok">${esc(x.token)}</pre>
+      <div class="toolbar mt"><button id="cp">Copy</button><span class="grow"></span><button id="cl" class="primary">Done</button></div>`);
+    $("#cp", m).onclick = () => navigator.clipboard.writeText(x.token).then(() => toast("Copied"));
+    $("#cl", m).onclick = () => { closeModal(); routes.releases(); };
+  });
+  $$("button[data-revoke]").forEach((b) => (b.onclick = async () => {
+    if (!confirm(`Revoke token ${b.dataset.revoke}? CI using it stops working.`)) return;
+    await act(() => api("/releases/tokens/revoke", { body: { name: b.dataset.revoke } }), "Revoked"); routes.releases();
+  }));
+};
+
+async function releaseRepo(name) {
+  title("Releases: " + name);
+  const st = await api(`/releases/repo/${encodeURIComponent(name)}`);
+  const L = st.labels;
+  for (const r of st.revisions) L[r.hash] = L[r.hash] || { label: r.label, version: r.version };
+  const stateCls = { current: "ok", behind: "warn", ahead: "bad", "unknown head": "bad", "no report": "" };
+  view().innerHTML = `<p><a href="#/releases">All repositories</a> · <a href="#/updates">Update Service</a></p>
+    <div class="card"><div class="kv"><div>Served by default</div><div>${revName(st.default_head, L)}</div>
+      <div>Rule</div><div class="muted">A store gets its own rollout, else its market's, else the default (the pin, else the newest released revision).
+        updatemgrd never moves back: a store past what it is served keeps its version until a revert reaches it.</div></div>
+      <div class="toolbar mt"><button id="rbAll">Roll everyone back...</button></div></div>
+    <h3>Revisions</h3>${table(st.revisions, [{ key: "seq" }, { key: "hash", render: (v) => `<code title="${esc(v)}">${short(v)}</code>` },
+      { key: "version" }, { key: "label" }, { key: "released", label: "", render: releasedPill }, { key: "origin" },
+      { key: "created_at", label: "Added" }, { key: "_", label: "", render: (v, r) => `<button data-roll="${esc(r.hash)}">Roll out...</button>` }])}
+    <h3>Store and market rollouts</h3>${table(st.rollouts, [{ key: "target_type", label: "Target", render: (v, r) => esc(targetText(v, r.target)) },
+      { key: "head", label: "Served", render: (v) => revName(v, L) }, { key: "created_at", label: "Since" },
+      { key: "_", label: "", render: (v, r) => `<button data-back="${esc(r.target_type)}" data-target="${esc(r.target)}">Roll back...</button>` }],
+      { empty: "None: every store gets the default." })}
+    <h3>Stores</h3><p class="muted">What each store last reported (<code>u p</code>, every 15 minutes) against what it is served now.</p>
+    ${table(st.stores, [{ key: "store", render: (v) => `<a href="#/kiosk/${esc(v)}">${esc(v)}</a>` }, { key: "market" },
+      { key: "state", render: (v) => pill(v, stateCls[v]) }, { key: "reported", label: "Runs", render: (v) => revName(v, L) },
+      { key: "reported_at", label: "Reported", render: (v) => esc(ago(v)) }, { key: "served", label: "Served", render: (v) => revName(v, L) },
+      { key: "_", label: "", render: (v, r) => `<button data-store-roll="${esc(r.store)}">Roll out...</button> <button data-back="store" data-target="${esc(r.store)}">Roll back...</button>` }],
+      { empty: "No store has polled yet." })}
+    <h3>History</h3>${table(st.log, [{ key: "created_at", label: "When" }, { key: "action" },
+      { key: "target_type", label: "Target", render: (v, r) => esc(targetText(v, r.target)) },
+      { key: "previous", label: "Before", render: (v) => v ? revName(v, L) : "the default" },
+      { key: "head", label: "After", render: (v) => v ? revName(v, L) : "the default" }, { key: "actor", label: "By" }], { empty: "No rollouts yet." })}`;
+
+  const targetFields = (pre = {}) => `
+    <label>Target <select name="kind"><option value="store">one store</option><option value="market">a market</option><option value="all">every store</option></select></label>
+    <label id="f-store">Store <select name="store">${st.stores.map((s) => `<option ${s.store === pre.store ? "selected" : ""}>${esc(s.store)}</option>`).join("")}</select></label>
+    <label id="f-market" class="hidden">Market <select name="market">${st.markets.map((x) => `<option>${esc(x)}</option>`).join("")}</select></label>`;
+  const wireTarget = (m, pre = {}) => {
+    const kind = $("select[name=kind]", m);
+    kind.value = pre.kind || "store";
+    const sync = () => { $("#f-store", m).classList.toggle("hidden", kind.value !== "store"); $("#f-market", m).classList.toggle("hidden", kind.value !== "market"); };
+    kind.onchange = sync; sync();
+    if (pre.market) $("select[name=market]", m).value = pre.market;
+  };
+  const targetBody = (fd) => (fd.get("kind") === "all" ? { all: true } : fd.get("kind") === "market" ? { market: fd.get("market") } : { store: fd.get("store") });
+  const check = (fd) => fd.get("kind") !== "all" || confirm(`This changes what EVERY store of ${name} is served. Continue?`);
+
+  const rollout = (hash, pre = {}) => {
+    const m = modal(`<h3>Roll out ${name}</h3><form id="rf">
+      <label>Revision <select name="revision">${st.revisions.map((r) => `<option value="${esc(r.hash)}" ${r.hash === hash ? "selected" : ""}>${esc(r.seq)} ${short(r.hash)} ${esc(r.version || r.label || "")}${r.released ? "" : " (unreleased)"}</option>`).join("")}</select></label>
+      ${targetFields(pre)}<p class="muted">Kiosks below it get every revision up to it; kiosks without the repository get its snapshot. Everyone: it is released and pinned, and store/market rollouts at or below it are removed.</p>
+      <button class="primary">Roll out</button> <button type="button" id="cl">Cancel</button></form>`);
+    wireTarget(m, pre);
+    $("#cl", m).onclick = closeModal;
+    $("#rf", m).addEventListener("submit", async (e) => {
+      e.preventDefault(); const fd = new FormData(e.target);
+      if (!check(fd)) return;
+      await act(() => api(`/releases/repo/${encodeURIComponent(name)}/rollout`, { body: { revision: fd.get("revision"), ...targetBody(fd) } }),
+        (x) => `${targetText(x.target, x.name)} now gets ${x.label || x.head.slice(0, 10)}`);
+      closeModal(); releaseRepo(name);
+    });
+  };
+  const rollback = (pre = {}) => {
+    const m = modal(`<h3>Roll back ${name}</h3><form id="bf">${targetFields(pre)}
+      <label>Back to <select name="to"><option value="">what it had before its last rollout</option>${st.revisions.map((r) => `<option value="${esc(r.hash)}">${esc(r.seq)} ${short(r.hash)} ${esc(r.version || r.label || "")}</option>`).join("")}</select></label>
+      <p class="muted">If no store of the target has taken the newer revision yet, the target is pointed back. If some have, a <b>revert revision</b>
+        is published with the older files and served to the target, because updatemgrd only moves forward. Files a release added are not removed.</p>
+      <button class="primary">Roll back</button> <button type="button" id="cl">Cancel</button></form><div id="bres"></div>`);
+    wireTarget(m, pre);
+    $("#cl", m).onclick = closeModal;
+    $("#bf", m).addEventListener("submit", async (e) => {
+      e.preventDefault(); const fd = new FormData(e.target);
+      if (!check(fd)) return;
+      const x = await act(() => api(`/releases/repo/${encodeURIComponent(name)}/rollback`, { body: { to: fd.get("to"), ...targetBody(fd) } }),
+        (x) => x.revert ? `Published revert ${x.revert.slice(0, 10)} for ${x.stores_ahead.length} store(s) that had moved on` : "Pointed back; no store had taken it yet");
+      if (x.not_removed && x.not_removed.length) {
+        $("#bres", m).innerHTML = `<p class="error">These files were added after ${esc(x.to.slice(0, 10))} and stay on the kiosks:</p><pre>${esc(x.not_removed.join("\n"))}</pre>
+          <button id="ok" class="primary">OK</button>`;
+        $("#ok", m).onclick = () => { closeModal(); releaseRepo(name); };
+      } else { closeModal(); releaseRepo(name); }
+    });
+  };
+  $$("button[data-roll]").forEach((b) => (b.onclick = () => rollout(b.dataset.roll)));
+  $$("button[data-store-roll]").forEach((b) => (b.onclick = () => rollout(st.revisions[0] && st.revisions[0].hash, { kind: "store", store: b.dataset.storeRoll })));
+  $$("button[data-back]").forEach((b) => (b.onclick = () => rollback({ kind: b.dataset.back, store: b.dataset.back === "store" ? b.dataset.target : undefined,
+    market: b.dataset.back === "market" ? b.dataset.target : undefined })));
+  $("#rbAll").onclick = () => rollback({ kind: "all" });
 }
 
 // ----------------------------------------------------------------------------- reservation broker

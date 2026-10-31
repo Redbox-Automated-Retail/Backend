@@ -159,14 +159,22 @@ async def reconstruct_head(repo, upto_hash=None, edition=None):
     return result, head, problems
 
 
-async def served_head(repo):
-    """The revision offered to kiosks: the pin if set and known, else the newest revision."""
+async def served_head(repo, store=None):
+    """The revision offered to kiosks: the store's rollout, else its market's (`upd_rollouts`), else the pin if
+    set and known, else the newest released revision (CI releases are published unreleased, docs/releases.md)."""
+    if store:
+        head = await db.fetchval(
+            "SELECT o.head FROM upd_rollouts o JOIN upd_revisions v ON v.repo = o.repo AND v.hash = o.head"
+            " WHERE o.repo = %s AND ((o.target_type = 'store' AND o.target = %s) OR (o.target_type = 'market'"
+            " AND o.target = (SELECT market FROM kiosks WHERE kiosk_id::text = %s)))"
+            " ORDER BY o.target_type DESC LIMIT 1", repo, str(store), str(store))   # 'store' before 'market'
+        if head:
+            return head
     row = await db.fetchrow("SELECT serve_head FROM upd_repositories WHERE name=%s", repo)
-    newest = await db.fetchval("SELECT hash FROM upd_revisions WHERE repo=%s ORDER BY seq DESC LIMIT 1", repo)
     pin = row and row["serve_head"]
     if pin and await db.fetchval("SELECT 1 FROM upd_revisions WHERE repo=%s AND hash=%s", repo, pin):
         return pin
-    return newest
+    return await db.fetchval("SELECT hash FROM upd_revisions WHERE repo=%s AND released ORDER BY seq DESC LIMIT 1", repo)
 
 
 async def build_snapshot(repo, head=None):
@@ -200,11 +208,12 @@ async def build_snapshot(repo, head=None):
 
 # ------------------------------------------------------------------------------------------ publish
 
-async def publish_revision(repo, files, label=None, use_deltas=True):
+async def publish_revision(repo, files, label=None, use_deltas=True, released=True, version=None, build=None):
     """Add a revision. `files` = list of (target_path, target_name, local_file). Unchanged files are skipped.
 
     Content is a VCDIFF delta against the head version when it is available and smaller, else a seed.
-    Returns the new revision hash, or None when nothing changed.
+    `released=False` keeps it from kiosks until it is rolled out (releases.py). Returns the new revision hash,
+    or None when nothing changed.
     """
     await db.execute("INSERT INTO upd_repositories (name) VALUES (%s) ON CONFLICT DO NOTHING", repo)
     current, _, _ = await reconstruct_head(repo) if await db.fetchval(
@@ -227,14 +236,18 @@ async def publish_revision(repo, files, label=None, use_deltas=True):
     if not items:
         return None
     seq = await db.fetchval("SELECT coalesce(max(seq), -1) + 1 FROM upd_revisions WHERE repo=%s", repo)
-    await db.execute("INSERT INTO upd_revisions (repo, seq, hash, label, origin) VALUES (%s,%s,%s,%s,'published')",
-                     repo, seq, rev_hash, label)
+    await db.execute("INSERT INTO upd_revisions (repo, seq, hash, label, origin, released, version, build)"
+                     " VALUES (%s,%s,%s,%s,'published',%s,%s,%s)", repo, seq, rev_hash, label, released, version,
+                     db.jsonb(build) if build is not None else None)
     for idx, it in enumerate(items):
         await db.execute(
             "INSERT INTO upd_changes (repo, rev_hash, idx, target_name, target_path, version_hash, content_hash,"
             " is_seed, composite, blob) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,false,%s)",
             repo, rev_hash, idx, it["tn"], it["tp"], it["vh"], it["ch"], it["seed"], it["blob"])
-    await build_snapshot(repo)
+    if released:
+        await build_snapshot(repo)
+    else:
+        await build_snapshot(repo, rev_hash)   # for kiosks without the repository that it is rolled out to
     log.info("published %s revision %s with %d files", repo, rev_hash, len(items))
     return rev_hash
 
@@ -269,12 +282,14 @@ def _file_sha1(p):
     return h.hexdigest().upper()
 
 
-async def change_set_for(repo, client_head):
+async def change_set_for(repo, client_head, store=None):
     """Return a ChangeSet dict for this repository and kiosk head, or None when the kiosk is current."""
     revs, by_rev = await _history(repo)
     if not revs:
         return None
-    pin = await served_head(repo)
+    pin = await served_head(repo, store)
+    if pin is None:
+        return None   # only unreleased revisions, and none rolled out to this store
     revs = revs[: next(i for i, r in enumerate(revs) if r["hash"] == pin) + 1]
     head = revs[-1]["hash"]
     client_head = (client_head or "").upper()
