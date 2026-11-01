@@ -223,8 +223,11 @@ def test_import_edit_build(tmp_path):
         name = await edit.put_image(JPEG + b"2", pid)
         await edit.set_barcode("0000000003", pid)
         await edit.save_group(2000, None, 1, [1000, 1001, pid])
+        # the dashboard's date pickers send ISO dates: stored the way the engine reads them
+        await edit.save_title({"release_date": "2024-01-01"}, pid)
+        assert (await edit.get_row(edit.TITLES, pid))["parsed"]["release_date"] == "20240101000000"
         with pytest.raises(edit.EditError):
-            await edit.save_title({"release_date": "2024-01-01"}, pid)
+            await edit.save_title({"release_date": "01/02/2024"}, pid)
 
         out2 = tmp_path / "out2"
         built = await store.build(out2)

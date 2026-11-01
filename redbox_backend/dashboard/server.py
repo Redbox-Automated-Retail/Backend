@@ -27,6 +27,7 @@ import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import apitokens, blobs, certs, config, db, filesets, kioskprofile
 from ..iot import kioskconfig
@@ -204,27 +205,47 @@ async def overview():
 
 # ------------------------------------------------------------------------------------------- kiosks
 
-@app.get("/api/kiosks")
-async def kiosks():
-    clients = await online_clients()
-    rows = await db.fetch(
-        "SELECT k.*, r.ucs_version AS iot_version, r.assembly_version, r.last_ping_at, r.broker_registered,"
-        " s.last_check_in, s.enabled AS store_enabled, c.reported_version AS config_version, c.activated_version,"
-        " (SELECT count(*) FROM cloud_inventory i WHERE i.kiosk_id = k.kiosk_id) AS discs,"
-        " (SELECT max(created_at) FROM cloud_transactions t WHERE t.kiosk_id = k.kiosk_id) AS last_transaction,"
-        " l.label, l.city, l.state AS location_state"
-        " FROM kiosks k LEFT JOIN iot_registrations r ON r.kiosk_id = k.kiosk_id"
-        " LEFT JOIN upd_stores s ON s.number = k.kiosk_id::text LEFT JOIN cfg_kiosk_state c ON c.kiosk_id = k.kiosk_id"
-        " LEFT JOIN cloud_kiosk_locations l ON l.kiosk_id = k.kiosk_id ORDER BY k.kiosk_id")
-    out = []
-    for r in rows:
-        kid = str(r["kiosk_id"])
-        info = r.get("info") or {}
-        recent = r["last_seen_at"] and r["last_seen_at"] > dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=ONLINE_MINUTES)
-        out.append(dict(r, mqtt_connected=kid in clients, online=kid in clients or bool(recent),
-                        versions=info.get("Versions"), info=None))
-    return ok(out)
+KIOSK_SORTS = {"kiosk_id": "k.kiosk_id", "last_seen": "k.last_seen_at", "market": "lower(k.market)", "city": "lower(l.city)",
+               "ucs_version": "k.ucs_version", "config": "c.reported_version", "discs": "discs", "status": "status_rank"}
 
+
+@app.get("/api/kiosks")
+async def kiosks(q: Optional[str] = None, status: Optional[str] = None, market: Optional[str] = None, sort: Optional[str] = None,
+                 dir: str = "asc", limit: int = 100, offset: int = 0):
+    """Kiosks, filtered, sorted and paged on the server. status: online (MQTT now or seen in the last 20 min), stale
+    (not seen for 20 min to a day), offline (longer); the default order puts problems first."""
+    clients = await online_clients()
+    live = [int(c) for c in clients if str(c).isdigit()]
+    recent = f"(k.kiosk_id = ANY(%s) OR k.last_seen_at > now() - interval '{ONLINE_MINUTES} minutes')"
+    rank = (f"CASE WHEN {recent} THEN 2 WHEN k.last_seen_at > now() - interval '1 day' THEN 1 ELSE 0 END")
+    where, args = [], []
+    if q and q.strip():
+        where.append("(k.kiosk_id::text LIKE %s OR k.market ILIKE %s OR l.city ILIKE %s OR l.label ILIKE %s OR k.ucs_version ILIKE %s)")
+        args += [q.strip() + "%"] + [f"%{q.strip()}%"] * 4
+    if status in ("online", "stale", "offline"):
+        where.append(f"{rank} = %s")
+        args += [live, {"online": 2, "stale": 1, "offline": 0}[status]]
+    if market:
+        where.append("k.market = %s"); args.append(market)
+    base = (" FROM kiosks k LEFT JOIN iot_registrations r ON r.kiosk_id = k.kiosk_id"
+            " LEFT JOIN upd_stores s ON s.number = k.kiosk_id::text LEFT JOIN cfg_kiosk_state c ON c.kiosk_id = k.kiosk_id"
+            " LEFT JOIN cloud_kiosk_locations l ON l.kiosk_id = k.kiosk_id" + ((" WHERE " + " AND ".join(where)) if where else ""))
+    order = KIOSK_SORTS.get(sort or "")
+    order = f"{order} {'DESC' if dir == 'desc' else 'ASC'} NULLS LAST, k.kiosk_id" if order else "status_rank, k.kiosk_id"
+    rows = await db.fetch(
+        f"SELECT k.kiosk_id, k.market, k.banner, k.ucs_version, k.last_seen_at, k.info->'Versions' AS versions, {rank} AS status_rank,"
+        " r.ucs_version AS iot_version, r.last_ping_at, r.broker_registered, s.last_check_in, c.reported_version AS config_version,"
+        " c.activated_version, l.label, l.city, l.state AS location_state,"
+        " (SELECT count(*) FROM cloud_inventory i WHERE i.kiosk_id = k.kiosk_id) AS discs" + base +
+        f" ORDER BY {order} LIMIT %s OFFSET %s", live, *args, min(limit, 500), offset)
+    for r in rows:
+        r["mqtt_connected"] = str(r["kiosk_id"]) in clients
+        r["status"] = {2: "online", 1: "stale", 0: "offline"}[r.pop("status_rank")]
+    counts = await db.fetchrow(f"SELECT count(*) FILTER (WHERE {rank} = 2) AS online, count(*) FILTER (WHERE {rank} = 1) AS stale,"
+                               f" count(*) FILTER (WHERE {rank} = 0) AS offline, count(*) AS total FROM kiosks k", live, live, live)
+    return ok({"rows": rows, "total": await db.fetchval("SELECT count(*)" + base, *args) if where else counts["total"],
+               "counts": counts, "markets": [r["market"] for r in await db.fetch(
+                   "SELECT DISTINCT market FROM kiosks WHERE market IS NOT NULL AND market <> '' ORDER BY 1")]})
 
 @app.get("/api/reprovision/{kiosk_id}.json")
 async def reprovision_profile(kiosk_id: int, address: Optional[str] = None, market: Optional[str] = None,
@@ -379,7 +400,7 @@ async def table_list():
 
 @app.get("/api/tables/{name}")
 async def table_rows(name: str, kiosk_id: Optional[int] = None, q: Optional[str] = None, limit: int = 100,
-                     offset: int = 0):
+                     offset: int = 0, sort: Optional[str] = None, dir: str = "asc"):
     table, key, title = _table(name)
     cols = await columns(table)
     names = [c["column_name"] for c in cols]
@@ -396,7 +417,8 @@ async def table_rows(name: str, kiosk_id: Optional[int] = None, q: Optional[str]
         args += [f"%{q}%"] * len(text_cols) + [q] * len(key)
     clause = (" WHERE " + " AND ".join(where)) if where else ""
     total = await db.fetchval(f"SELECT count(*) FROM {table}{clause}", *args)
-    rows = await db.fetch(f"SELECT {select} FROM {table}{clause} ORDER BY {', '.join(key)} LIMIT %s OFFSET %s",
+    order = (f"{sort} {'DESC' if dir == 'desc' else 'ASC'} NULLS LAST, " if sort in names else "") + ', '.join(key)
+    rows = await db.fetch(f"SELECT {select} FROM {table}{clause} ORDER BY {order} LIMIT %s OFFSET %s",
                           *args, min(limit, 1000), offset)
     for r in rows:
         for c in SECRET_COLUMNS & set(r):
@@ -1321,14 +1343,21 @@ async def catalog_omdb(body: dict):
 
 
 @app.get("/api/catalog/groups")
-async def catalog_groups(q: Optional[str] = None, product_id: Optional[int] = None, limit: int = 100):
+async def catalog_groups(q: Optional[str] = None, product_id: Optional[int] = None, limit: int = 100, offset: int = 0,
+                         sort: Optional[str] = None, dir: str = "desc", paged: bool = False):
+    """Product groups; paged=true answers {rows, total} for the dashboard's paged table."""
     where, args = "", []
     if product_id:
         where, args = " AND value->'product_id_list' @> %s", [db.jsonb([product_id])]
     elif q:
         where, args = " AND (key = %s OR value->>'product_group_name' ILIKE %s)", [q.strip(), f"%{q}%"]
-    return ok(await db.fetch("SELECT key::bigint AS product_group_id, value FROM catalog_rows WHERE tbl='ProductGroup'"
-                             + where + " ORDER BY key::bigint DESC LIMIT %s", *args, min(limit, 500)))
+    by = {"name": "lower(value->>'product_group_name')", "type": "value->>'product_group_type_id'"}.get(sort or "", "key_num")
+    rows = await db.fetch("SELECT key::bigint AS product_group_id, value FROM catalog_rows WHERE tbl='ProductGroup'" + where +
+                          f" ORDER BY {by} {'ASC' if dir == 'asc' else 'DESC'} NULLS LAST, key_num DESC LIMIT %s OFFSET %s",
+                          *args, min(limit, 500), offset)
+    if not paged:
+        return ok(rows)
+    return ok({"rows": rows, "total": await db.fetchval("SELECT count(*) FROM catalog_rows WHERE tbl='ProductGroup'" + where, *args)})
 
 
 @app.post("/api/catalog/groups")
@@ -1348,17 +1377,27 @@ async def catalog_group_delete(gid: int):
 
 
 @app.get("/api/catalog/barcodes")
-async def catalog_barcodes(q: Optional[str] = None, product_id: Optional[int] = None, limit: int = 100):
+async def catalog_barcodes(q: Optional[str] = None, product_id: Optional[int] = None, limit: int = 100, offset: int = 0,
+                           paged: bool = False):
+    """Barcodes of a title, from a barcode on (in barcode order), or the ones added here / learned from kiosks.
+    paged=true answers {rows, total} (the total of "from a barcode on" is the catalog's estimate: 26 million rows)."""
     if product_id:
-        rows = await db.fetch("SELECT * FROM cloud_barcodes WHERE product_id=%s ORDER BY barcode LIMIT %s",
-                              product_id, min(limit, 1000))
+        sql, args = " FROM cloud_barcodes WHERE product_id=%s", [product_id]
+        order = " ORDER BY barcode"
     elif q:
-        rows = await db.fetch("SELECT * FROM cloud_barcodes WHERE barcode >= %s ORDER BY barcode LIMIT %s",
-                              q.strip(), min(limit, 1000))
+        sql, args = " FROM cloud_barcodes WHERE barcode >= %s", [q.strip()]
+        order = " ORDER BY barcode"
     else:
-        rows = await db.fetch("SELECT * FROM cloud_barcodes WHERE source <> 'catalog' ORDER BY updated_at DESC LIMIT %s",
-                              min(limit, 1000))
-    return ok(rows)
+        sql, args = " FROM cloud_barcodes WHERE source <> 'catalog'", []
+        order = " ORDER BY updated_at DESC"
+    rows = await db.fetch("SELECT *" + sql + order + " LIMIT %s OFFSET %s", *args, min(limit, 1000), offset)
+    if not paged:
+        return ok(rows)
+    if q and not product_id:
+        total = offset + len(rows) + (1000 if len(rows) == min(limit, 1000) else 0)   # open-ended: "more" while pages are full
+    else:
+        total = await db.fetchval("SELECT count(*)" + sql, *args)
+    return ok({"rows": rows, "total": total})
 
 
 @app.post("/api/catalog/barcodes")
@@ -1376,13 +1415,17 @@ async def catalog_barcode_delete(body: dict):
 
 
 @app.get("/api/catalog/rows/{table}")
-async def catalog_rows(table: str, q: Optional[str] = None, limit: int = 100, offset: int = 0):
+async def catalog_rows(table: str, q: Optional[str] = None, limit: int = 100, offset: int = 0, sort: Optional[str] = None,
+                       dir: str = "asc"):
     where, args = "", []
     if q:
         where, args = " AND (key = %s OR lua ILIKE %s)", [q, f"%{q}%"]
     base = " FROM catalog_rows WHERE tbl=%s" + where
+    by = {"key": "key_num NULLS LAST, key", "ord": "ord"}.get(sort or "ord", "ord")
+    order = ", ".join(f"{c.split()[0]} {'DESC' if dir == 'desc' else 'ASC'}" + (" NULLS LAST" if "NULLS" in c else "")
+                      for c in by.split(", "))
     return ok({"total": await db.fetchval("SELECT count(*)" + base, table, *args),
-               "rows": await db.fetch("SELECT key, lua" + base + " ORDER BY ord LIMIT %s OFFSET %s", table, *args,
+               "rows": await db.fetch("SELECT key, lua" + base + f" ORDER BY {order} LIMIT %s OFFSET %s", table, *args,
                                       min(limit, 1000), offset)})
 
 
@@ -1561,7 +1604,9 @@ async def upload_file(key: str):
 
 @app.get("/api/events")
 async def events(kiosk_id: Optional[int] = None, source: Optional[str] = None, kind: Optional[str] = None,
-                 q: Optional[str] = None, before_id: Optional[int] = None, limit: int = 100):
+                 q: Optional[str] = None, before_id: Optional[int] = None, limit: int = 100, offset: int = 0,
+                 sort: Optional[str] = None, dir: str = "desc", paged: bool = False, since: Optional[str] = None,
+                 until: Optional[str] = None):
     where, args = [], []
     for col, v in (("kiosk_id", kiosk_id), ("source", source), ("kind", kind)):
         if v not in (None, ""):
@@ -1573,8 +1618,19 @@ async def events(kiosk_id: Optional[int] = None, source: Optional[str] = None, k
     if q:
         where.append("(payload::text ILIKE %s OR kind ILIKE %s)")
         args += [f"%{q}%", f"%{q}%"]
+    if since:
+        where.append("created_at >= %s::timestamptz"); args.append(since)
+    if until:
+        where.append("created_at < %s::timestamptz"); args.append(until)
     clause = (" WHERE " + " AND ".join(where)) if where else ""
-    return ok(await db.fetch(f"SELECT * FROM events{clause} ORDER BY id DESC LIMIT %s", *args, min(limit, 500)))
+    col = {"id": "id", "created_at": "id", "kiosk_id": "kiosk_id", "source": "source", "kind": "kind"}.get(sort or "id", "id")
+    rows = await db.fetch(f"SELECT * FROM events{clause} ORDER BY {col} {'ASC' if dir == 'asc' else 'DESC'} NULLS LAST, id DESC"
+                          " LIMIT %s OFFSET %s", *args, min(limit, 500), offset)
+    if not paged:
+        return ok(rows)
+    # counted up to 100,000 so a filter over a long history stays quick
+    total = await db.fetchval(f"SELECT count(*) FROM (SELECT 1 FROM events{clause} LIMIT 100001) x", *args)
+    return ok({"rows": rows, "total": total, "capped": total > 100000})
 
 
 @app.get("/api/events/kinds")
@@ -1585,10 +1641,29 @@ async def event_kinds():
 
 # ------------------------------------------------------------------------------------------- static
 
-from . import control  # noqa: E402  (control-center routes; must be added before the static mount)
+from . import control, geocode  # noqa: E402  (control-center routes; must be added before the static mount)
 
 app.include_router(control.router)
-app.mount("/", StaticFiles(directory=STATIC, html=True), name="static")
+app.include_router(geocode.router)
+
+
+class SinglePageApp(StaticFiles):
+    """The React app (dashboard-ui, built into static/): files as they are; any other path that is not under /api gets
+    index.html, so a route like /stores/banners?q=... can be reloaded or linked."""
+
+    async def get_response(self, path, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as e:
+            if e.status_code != 404 or path.startswith("api/") or "." in path.rsplit("/", 1)[-1]:
+                raise
+            return await super().get_response("index.html", scope)
+
+
+if not (STATIC / "index.html").exists():
+    log.warning("the dashboard frontend is not built (%s): cd dashboard-ui && npm ci && npm run build", STATIC)
+    STATIC.mkdir(parents=True, exist_ok=True)
+app.mount("/", SinglePageApp(directory=STATIC, html=True), name="static")
 
 
 def main(argv):

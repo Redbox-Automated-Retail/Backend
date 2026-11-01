@@ -15,7 +15,7 @@ import asyncio
 import datetime as dt
 
 from .. import blobs, db
-from . import edit, lua
+from . import dates, edit, lua
 
 STORE, BANNER, MARKET = "Store", "Banner", "Market"
 TABLES = (STORE, BANNER, MARKET)
@@ -71,12 +71,15 @@ def _clean(field, value):
     if field in ("sell_thru", "inv_sync"):
         return value if isinstance(value, bool) else str(value).lower() in ("1", "true", "yes", "on")
     if field in ("open_date", "return_only_mode_date"):
-        s = "".join(c for c in str(value) if c.isdigit())
-        if len(s) == 8:
-            s += "000000"
-        if len(s) != 14:
-            raise StoreError(f"{field}: a date (yyyyMMdd), not {value!r}")
-        return s
+        try:
+            return dates.to_redbox_date(value, field)
+        except dates.DateError as e:
+            raise StoreError(str(e))
+    if field == "return_time":
+        try:
+            return dates.to_redbox_time(value, field)
+        except dates.DateError as e:
+            raise StoreError(str(e))
     if field == "state":
         return str(value).strip().upper()
     return str(value).strip()
@@ -145,6 +148,11 @@ async def set_offer(sid, offered, due_time=None, kaseya_market=None):
         raise StoreError(f"no store {sid}")
     await db.execute("INSERT INTO cloud_installer_kiosks (id, state_id, state_name, banner_id, banner_name, pending)"
                      " VALUES (%s, 0, '', 0, '', true) ON CONFLICT (id) DO UPDATE SET pending = true", sid)
+    if due_time not in (None, ""):
+        try:
+            due_time = dates.to_display_time(due_time, "due_time")
+        except dates.DateError as e:
+            raise StoreError(str(e))
     if due_time is not None or kaseya_market is not None:
         await db.execute("UPDATE cloud_installer_kiosks SET due_time = coalesce(%s, due_time),"
                          " kaseya_market_name = coalesce(%s, kaseya_market_name) WHERE id = %s",
@@ -178,36 +186,144 @@ async def sync_offer(sid):
                          market, banner, int(sid))
 
 
-async def search(q=None, offered=None, limit=100, offset=0):
+STORE_SORTS = {
+    "store_id": "s.key_num",
+    "banner": "lower(b.value->>'banner_name')", "market": "lower(m.value->>'market_name')",
+    "city": "lower(s.value->>'city')", "state": "s.value->>'state'", "address": "lower(s.value->>'address')",
+    "offered": "coalesce(i.pending, false)", "last_seen": "k.last_seen_at", "edited": "s.edited_at",
+}
+
+
+def _store_out(r):
+    """A store row for the dashboard: the Store value plus its dates and times in ISO / 24-hour form."""
+    v = r.get("store") or {}
+    r["open_date_iso"] = dates.from_redbox_date(v.get("open_date"))
+    r["return_only_mode_date_iso"] = dates.from_redbox_date(v.get("return_only_mode_date"))
+    r["return_time_24"] = dates.from_redbox_time(v.get("return_time"))
+    r["due_time_24"] = dates.from_redbox_time(r.get("due_time")) if r.get("due_time") else None
+    return r
+
+
+async def search(q=None, offered=None, limit=100, offset=0, sort=None, direction="asc", state=None, banner_id=None,
+                 market_id=None, has_kiosk=None):
     where, args = ["s.tbl = 'Store'"], []
     if q and q.strip():
         q = q.strip()
-        where.append("(s.key = %s OR s.value->>'address' ILIKE %s OR s.value->>'city' ILIKE %s OR b.value->>'banner_name' ILIKE %s"
-                     " OR m.value->>'market_name' ILIKE %s OR s.value->>'state' = upper(%s))")
-        args += [q, f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", q]
+        # address through its trigram index; banner and market names through the small Banner / Market tables
+        where.append("(s.key = %s OR s.value->>'address' ILIKE %s"
+                     " OR s.value->>'banner_id' IN (SELECT key FROM catalog_rows WHERE tbl = 'Banner' AND value->>'banner_name' ILIKE %s)"
+                     " OR s.value->>'market_id' IN (SELECT key FROM catalog_rows WHERE tbl = 'Market' AND value->>'market_name' ILIKE %s))")
+        args += [q, f"%{q}%", f"%{q}%", f"%{q}%"]
     if offered is not None:
         where.append("i.pending" if offered else "coalesce(i.pending, false) = false")
+    if state:
+        where.append("s.value->>'state' = %s"); args.append(state.upper())
+    if banner_id not in (None, ""):
+        where.append("s.value->>'banner_id' = %s"); args.append(str(banner_id))
+    if market_id not in (None, ""):
+        where.append("s.value->>'market_id' = %s"); args.append(str(market_id))
+    if has_kiosk is not None:
+        where.append("k.kiosk_id IS NOT NULL" if has_kiosk else "k.kiosk_id IS NULL")
     base = (" FROM catalog_rows s LEFT JOIN catalog_rows b ON b.tbl = 'Banner' AND b.key = s.value->>'banner_id'"
             " LEFT JOIN catalog_rows m ON m.tbl = 'Market' AND m.key = s.value->>'market_id'"
-            " LEFT JOIN cloud_installer_kiosks i ON i.id::text = s.key"
-            " LEFT JOIN kiosks k ON k.kiosk_id::text = s.key WHERE " + " AND ".join(where))
+            " LEFT JOIN cloud_installer_kiosks i ON i.id = s.key_num"
+            " LEFT JOIN kiosks k ON k.kiosk_id = s.key_num WHERE " + " AND ".join(where))
+    order = STORE_SORTS.get(sort or "store_id", STORE_SORTS["store_id"])
     rows = await db.fetch(
-        "SELECT s.key::bigint AS store_id, s.value AS store, b.value->>'banner_name' AS banner, m.value->>'market_name' AS market,"
+        "SELECT s.key_num AS store_id, s.value AS store, b.value->>'banner_name' AS banner, m.value->>'market_name' AS market,"
         " i.pending AS offered, i.due_time, i.kaseya_market_name, k.last_seen_at, s.edited_at" + base +
-        " ORDER BY (k.last_seen_at IS NULL), coalesce(i.pending, false) DESC, s.edited_at DESC NULLS LAST,"
-        " CASE WHEN s.key ~ '^[0-9]{1,18}$' THEN s.key::bigint END LIMIT %s OFFSET %s", *args, min(limit, 500), offset)
-    return {"total": await db.fetchval("SELECT count(*)" + base, *args), "rows": rows}
+        f" ORDER BY {order} {'DESC' if direction == 'desc' else 'ASC'} NULLS LAST, s.key_num LIMIT %s OFFSET %s",
+        *args, min(limit, 500), offset)
+    if len(where) == 1:   # no filter: count the Store rows alone, without the joins
+        total = await db.fetchval("SELECT count(*) FROM catalog_rows WHERE tbl = 'Store'")
+    else:
+        total = await db.fetchval("SELECT count(*)" + base, *args)
+    return {"total": total, "rows": [_store_out(r) for r in rows]}
+
+
+async def get_store(sid):
+    r = await search(q=str(sid), limit=5)
+    return next((x for x in r["rows"] if x["store_id"] == int(sid)), None)
+
+
+async def stats():
+    stamped = await db.fetchval("SELECT stamped_at FROM catalog_state WHERE id=1")
+    return await db.fetchrow(
+        "SELECT (SELECT count(*) FROM catalog_rows WHERE tbl = 'Store') AS stores,"
+        " (SELECT count(*) FROM catalog_rows WHERE tbl = 'Banner') AS banners,"
+        " (SELECT count(*) FROM catalog_rows WHERE tbl = 'Market') AS markets,"
+        " (SELECT count(*) FROM cloud_installer_kiosks WHERE pending) AS offered,"
+        " (SELECT count(*) FROM kiosks k WHERE EXISTS (SELECT 1 FROM catalog_rows s WHERE s.tbl = 'Store' AND s.key_num = k.kiosk_id))"
+        "   AS with_kiosk,"
+        " (SELECT count(*) FROM catalog_rows WHERE tbl IN ('Store', 'Banner', 'Market') AND edited_at IS NOT NULL"
+        "   AND edited_at > coalesce(%s, '-infinity'::timestamptz)) AS unpublished,"
+        " (SELECT count(DISTINCT value->>'state') FROM catalog_rows WHERE tbl = 'Store') AS states", stamped)
+
+
+NAMED_SORTS = {"id": "r.key::bigint", "name": "lower(r.value->>'{f}_name')", "stores": "coalesce(c.n, 0)", "edited": "r.edited_at"}
+
+
+async def named_list(tbl, q=None, limit=100, offset=0, sort="name", direction="asc"):
+    """Banners or markets with how many stores use each (counted in one pass, not per row)."""
+    f = "banner" if tbl == BANNER else "market"
+    where, args = ["r.tbl = %s", "r.key ~ '^[0-9]{1,18}$'"], [tbl]
+    if q and q.strip():
+        where.append(f"(r.value->>'{f}_name' ILIKE %s OR r.key = %s)"); args += [f"%{q.strip()}%", q.strip()]
+    base = (f" FROM catalog_rows r LEFT JOIN (SELECT value->>'{f}_id' AS id, count(*) AS n FROM catalog_rows"
+            f" WHERE tbl = 'Store' GROUP BY 1) c ON c.id = r.key WHERE " + " AND ".join(where))
+    order = NAMED_SORTS.get(sort or "name", NAMED_SORTS["name"]).format(f=f)
+    rows = await db.fetch(f"SELECT r.key::bigint AS id, r.value->>'{f}_name' AS name, coalesce(c.n, 0) AS stores, r.edited_at{base}"
+                          f" ORDER BY {order} {'DESC' if direction == 'desc' else 'ASC'} NULLS LAST, r.key::bigint"
+                          " LIMIT %s OFFSET %s", *args, min(limit, 1000), offset)
+    return {"total": await db.fetchval(f"SELECT count(*){base}", *args), "rows": rows}
+
+
+async def named_options(tbl):
+    """Every banner or market as {id, name}, for pickers."""
+    f = "banner" if tbl == BANNER else "market"
+    return [{"id": int(r["key"]), "name": (r["value"] or {}).get(f"{f}_name") or f"#{r['key']}"} for r in await db.fetch(
+        f"SELECT key, value FROM catalog_rows WHERE tbl = %s AND key ~ '^[0-9]{{1,18}}$' ORDER BY lower(value->>'{f}_name')", tbl)]
+
+
+async def named_usage(tbl, key):
+    f = "banner" if tbl == BANNER else "market"
+    return await db.fetchval(f"SELECT count(*) FROM catalog_rows WHERE tbl = 'Store' AND value->>'{f}_id' = %s", str(key))
+
+
+async def delete_named(tbl, key, reassign_to=None, clear=False):
+    """Delete a banner or market. Stores that use it must be moved first: to `reassign_to`, or to none with `clear`.
+    Returns how many stores were moved."""
+    f = "banner" if tbl == BANNER else "market"
+    key = int(key)
+    if not await edit.get_row(tbl, key):
+        raise StoreError(f"no {f} {key}")
+    used = await named_usage(tbl, key)
+    if used and reassign_to in (None, "") and not clear:
+        raise StoreError(f"{used} stores use this {f}: move them to another {f} first")
+    if reassign_to not in (None, ""):
+        reassign_to = int(reassign_to)
+        if reassign_to == key or not await edit.get_row(tbl, reassign_to):
+            raise StoreError(f"choose another existing {f} to move the stores to")
+    moved = 0
+    if used:
+        # stores with an installer entry or a kiosk also get those brought in line
+        linked = {str(r["id"]) for r in await db.fetch("SELECT id FROM cloud_installer_kiosks UNION SELECT kiosk_id FROM kiosks")}
+        for r in await db.fetch(f"SELECT key FROM catalog_rows WHERE tbl = 'Store' AND value->>'{f}_id' = %s", str(key)):
+            row = await edit.get_row(STORE, r["key"])
+            v = row["parsed"]
+            v[f"{f}_id"] = None if clear and reassign_to in (None, "") else reassign_to
+            await edit.put_row(STORE, r["key"], v)
+            if r["key"] in linked:
+                await sync_offer(int(r["key"]))
+            moved += 1
+    await edit.delete_row(tbl, key)
+    return moved
 
 
 async def lookups():
-    async def named(tbl, field):
-        return [{"id": int(r["key"]), "name": (r["value"] or {}).get(f"{field}_name")} for r in await db.fetch(
-            "SELECT key, value FROM catalog_rows WHERE tbl = %s AND key ~ '^[0-9]{1,18}$' ORDER BY value->>%s",
-            tbl, f"{field}_name")]
-    return {"banners": await named(BANNER, "banner"), "markets": await named(MARKET, "market"),
+    return {"banners": await named_options(BANNER), "markets": await named_options(MARKET),
             "states": [{"code": c, "name": n} for c, n in sorted(STATES.items(), key=lambda x: x[1])],
             "present": sorted(await tables_present())}
-
 
 # ------------------------------------------------------------------------------------------ import
 

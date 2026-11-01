@@ -7,3 +7,9 @@ __pycache__/
 /out/
 *.env
 /.env
+
+# Built by dashboard-ui (npm run build, or the Dockerfile's ui stage)
+/redbox_backend/dashboard/static/
+/dashboard-ui/node_modules/
+
+/dashboard-ui/*.tsbuildinfo

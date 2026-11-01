@@ -13,3 +13,5 @@ software/**/bin
 software/**/obj
 vendor/*/tests
 vendor/*/oracle
+dashboard-ui/node_modules
+redbox_backend/dashboard/static

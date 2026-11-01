@@ -59,7 +59,10 @@ def test_login_session_and_csrf(client):
 def test_overview_kiosks_and_tables(client):
     login(client)
     assert "counts" in client.get("/api/overview").json()
-    assert isinstance(client.get("/api/kiosks").json(), list)
+    k = client.get("/api/kiosks?limit=5&sort=kiosk_id&dir=desc").json()
+    assert {"rows", "total", "counts", "markets"} <= set(k) and len(k["rows"]) <= 5
+    ids = [r["kiosk_id"] for r in k["rows"]]
+    assert ids == sorted(ids, reverse=True)
     names = {t["name"] for t in client.get("/api/tables").json()}
     assert {"inventory", "products", "pricing_default", "promo_codes"} <= names
 
@@ -242,19 +245,27 @@ def test_kiosk_edit_and_activity(client):
 
 def test_stores_feed_the_kiosk_installer(client):
     login(client)
-    if "Store" not in client.get("/api/stores/lookups").json()["present"]:
+    if "Store" not in client.get("/api/stores/stats").json()["present"]:
         pytest.skip("no Store table (no catalog or stores imported)")
     sid = 990600 + uuid.uuid4().int % 300
     bname, mname = "Banner " + uuid.uuid4().hex[:6], "Market " + uuid.uuid4().hex[:6]
-    banner = client.post("/api/stores/banners", headers=H, json={"name": bname}).json()["saved"]
-    market = client.post("/api/stores/markets", headers=H, json={"name": mname}).json()["saved"]
+    banner = client.post("/api/banners", headers=H, json={"name": bname}).json()["id"]
+    market = client.post("/api/markets", headers=H, json={"name": mname}).json()["id"]
+    other = client.post("/api/banners", headers=H, json={"name": bname + " 2"}).json()["id"]
+    # dates and times come from pickers: ISO dates and 24-hour times, stored the way profile.data has them
     r = client.post("/api/stores", headers=H, json={"store_id": sid, "address1": "1 Main St", "city": "Dallas", "state": "TX",
-                                                     "zip": "75201", "banner_id": banner, "market_id": market,
-                                                     "offered": True, "due_time": "9:00 PM"})
+                                                     "zip": "75201", "banner_id": banner, "market_id": market, "return_time": "21:30",
+                                                     "open_date": "2026-01-31", "offered": True, "due_time": "21:00"})
     assert r.status_code == 200, r.text
-    assert r.json()["store"]["address"] == "1 Main St Dallas, TX 75201"
-    found = client.get(f"/api/stores?q={sid}").json()["rows"]
-    assert [(x["store_id"], x["banner"], x["market"], x["offered"]) for x in found] == [(sid, bname, mname, True)]
+    s = r.json()
+    assert s["store"]["address"] == "1 Main St Dallas, TX 75201" and s["store"]["return_time"] == "09:30PM"
+    assert s["store"]["open_date"] == "20260131000000" and s["open_date_iso"] == "2026-01-31" and s["return_time_24"] == "21:30"
+    assert s["due_time"] == "9:00 PM" and s["due_time_24"] == "21:00"
+    assert client.post("/api/stores", headers=H, json={"store_id": sid}).status_code == 409   # already there
+    bad = client.put(f"/api/stores/{sid}", headers=H, json={"open_date": "31/01/2026"})
+    assert bad.status_code == 400 and "not a date" in bad.json()["detail"]
+    found = client.get(f"/api/stores?banner_id={banner}&sort=store_id&dir=desc").json()
+    assert [(x["store_id"], x["banner"], x["market"], x["offered"]) for x in found["rows"]] == [(sid, bname, mname, True)]
     try:
         # what the kiosk installer asks the Proxy API during setup: state, then banner, then store, then its ops market
         api = cc.client()
@@ -264,11 +275,44 @@ def test_stores_feed_the_kiosk_installer(client):
         kiosks = api.get(f"/api/installer/getpendingkiosks?stateid={texas['Id']}&bannerid={banner}").json()["PendingKiosks"]
         assert [(k["Id"], k["City"], k["MarketName"]) for k in kiosks] == [(sid, "Dallas", mname)]
         assert api.get(f"/api/installer/getopsmarket?kioskid={sid}").json()["OpsMarket"] == mname
-        # no longer offered: gone from the installer's list
-        assert client.post("/api/stores/offer", headers=H, json={"store_id": sid, "offered": False}).status_code == 200
-        assert not api.get(f"/api/installer/getpendingkiosks?stateid={texas['Id']}&bannerid={banner}").json()["PendingKiosks"]
+        # a banner in use can't simply be deleted; reassigning moves its stores, then deletes it
+        assert client.get(f"/api/banners/{banner}/usage").json() == {"stores": 1}
+        r = client.delete(f"/api/banners/{banner}", headers=H)
+        assert r.status_code == 400 and "move them" in r.json()["detail"]
+        r = client.delete(f"/api/banners/{banner}?reassign_to={other}", headers=H)
+        assert r.json() == {"deleted": banner, "moved": 1}
+        assert client.get(f"/api/stores/{sid}").json()["banner"] == bname + " 2"
+        assert client.post(f"/api/stores/{sid}/offer", headers=H, json={"offered": False}).status_code == 200
+        assert not api.get(f"/api/installer/getpendingkiosks?stateid={texas['Id']}&bannerid={other}").json()["PendingKiosks"]
+        # a market in use: clearing leaves its stores without one
+        assert client.delete(f"/api/markets/{market}?clear=true", headers=H).json() == {"deleted": market, "moved": 1}
+        assert client.get(f"/api/stores/{sid}").json()["market"] is None
+        names = client.get("/api/banners?q=" + bname + "&sort=name&dir=asc").json()
+        assert [b["name"] for b in names["rows"]] == [bname + " 2"] and names["rows"][0]["stores"] == 1
     finally:
-        client.post("/api/stores/delete", headers=H, json={"store_id": sid})
+        assert client.delete(f"/api/stores/{sid}", headers=H).status_code == 200
+        assert client.get(f"/api/stores/{sid}").status_code == 404
         cc.client().sql("DELETE FROM cloud_kiosk_locations WHERE kiosk_id = %s", sid)
-        cc.client().sql("DELETE FROM catalog_rows WHERE (tbl = 'Banner' AND key = %s) OR (tbl = 'Market' AND key = %s)",
-                        str(banner), str(market))
+        cc.client().sql("DELETE FROM catalog_rows WHERE tbl IN ('Banner', 'Market') AND key IN (%s, %s, %s)",
+                        str(banner), str(market), str(other))
+
+
+def test_frontend_routes_fall_back_to_the_app(client):
+    from redbox_backend.dashboard import server
+    index = server.STATIC / "index.html"
+    if not index.exists():
+        pytest.skip("frontend not built (dashboard-ui: npm run build)")
+    r = client.get("/stores/banners?q=x")
+    assert r.status_code == 200 and "<div id=\"root\">" in r.text
+    assert client.get("/api/no-such-route").status_code == 404
+    assert client.get("/assets/no-such-file.js").status_code == 404
+
+
+def test_page_stats(client):
+    login(client)
+    from redbox_backend.dashboard import control
+    for area in control.STATS:
+        r = client.get(f"/api/stats/{area}")
+        assert r.status_code == 200, (area, r.text)
+        assert r.json() and "amount" not in r.json() and "revenue" not in r.json()
+    assert client.get("/api/stats/nope").status_code == 404

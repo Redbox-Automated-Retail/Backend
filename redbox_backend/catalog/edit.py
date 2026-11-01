@@ -19,7 +19,7 @@ import os
 import re
 
 from .. import blobs, db
-from . import lua, store
+from . import dates, lua, store
 
 TITLES = "ProductCatalog"
 GROUPS = "ProductGroup"
@@ -156,9 +156,11 @@ async def save_title(fields, product_id=None):
             raise EditError(f"bad field name {k!r}")
         if k.endswith("_date"):
             # the engine reads dates with ParseExact("yyyyMMdd" / "yyyyMMddHHmmss"); anything else drops the title
-            v = None if v in ("", None) else str(v)
-            if v is not None and not re.fullmatch(r"\d{8}(\d{6})?", v):
-                raise EditError(f"{k}: dates are yyyyMMdd or yyyyMMddHHmmss, not {v!r}")
+            # pickers send ISO dates; stored as yyyyMMddHHmmss (dates.py)
+            try:
+                v = dates.to_redbox_date(v, k)
+            except dates.DateError as e:
+                raise EditError(str(e))
         value[k] = v
     if existing is None:
         today = dt.date.today().strftime("%Y%m%d000000")
